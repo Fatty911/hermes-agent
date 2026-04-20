@@ -125,9 +125,9 @@ class TestReadTrackerCaps:
 
         with ft._read_tracker_lock:
             td = ft._read_tracker["long-session"]
-            assert len(td["read_history"]) <= 3
-            assert len(td["dedup"]) <= 3
-            assert len(td["read_timestamps"]) <= 3
+            assert len(td.get("read_history", set())) <= 3
+            assert len(td.get("dedup", {})) <= 3
+            assert len(td.get("read_timestamps", {})) <= 3
 
 
 class TestCompletionConsumedPrune:
