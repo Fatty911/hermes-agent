@@ -145,7 +145,12 @@ jobs:
           FIX_SUCCEEDED=false
           
           echo "尝试 oh-my-opencode..."
-          oh-my-opencode run --model "$BEST_MODEL" "分析上游同步产生的合并冲突。冲突文件: $CONFLICTED。请智能合并冲突，保留上游的重要更新同时保留本地定制。修复后提交。退出。" 2>&1 | tee opencode_output.log || true
+          # 读取 AGENTS.md 全局要求
+          AGENTS_PROMPT=""
+          if [ -f "AGENTS.md" ]; then
+            AGENTS_PROMPT="【全局要求 - 必须遵守】$(cat AGENTS.md)"
+          fi
+          oh-my-opencode run --model "$BEST_MODEL" "$AGENTS_PROMPT\n\n分析上游同步产生的合并冲突。冲突文件: $CONFLICTED。请智能合并冲突，保留上游的重要更新同时保留本地定制。修复后提交。退出。" 2>&1 | tee opencode_output.log || true
           
           if grep -qi "ProviderModelNotFoundError\|Error: Model not found\|session.error\|UnknownError" opencode_output.log; then
             echo "::warning::oh-my-opencode 运行异常，准备 fallback..."
@@ -155,7 +160,7 @@ jobs:
           
           if [ "$FIX_SUCCEEDED" = "false" ]; then
             echo "尝试 opencode run..."
-            opencode run --model "$BEST_MODEL" "解决上游同步的合并冲突。智能合并，保留重要更新。退出。" 2>&1 | tee opencode_output.log || true
+            opencode run --model "$BEST_MODEL" "$AGENTS_PROMPT\n\n解决上游同步的合并冲突。智能合并，保留重要更新。退出。" 2>&1 | tee opencode_output.log || true
             if ! grep -qi "ProviderModelNotFoundError\|Error: Model not found\|session.error\|UnknownError" opencode_output.log; then
               FIX_SUCCEEDED=true
             fi
