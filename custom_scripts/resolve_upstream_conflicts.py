@@ -439,13 +439,23 @@ def main():
         print("\n请等待 Track 3 (OpenCode) 深度修复...")
         sys.exit(1)
     else:
-        # 添加解决的文件
         for f in conflicted:
             subprocess.run(["git", "add", f], check=True)
         
         print("\n✅ 所有冲突已解决！")
         
-        # 提交
+        print("\n🔍 执行语法校验...")
+        validate_result = subprocess.run(
+            ["python", "custom_scripts/validate_syntax.py"],
+            capture_output=True, text=True, timeout=120
+        )
+        if validate_result.returncode != 0:
+            print(f"❌ 语法校验失败:\n{validate_result.stdout}\n{validate_result.stderr}")
+            print("⚠️ 回滚修改，拒绝推送")
+            subprocess.run(["git", "checkout", "--", "."], check=False)
+            sys.exit(1)
+        print("✅ 语法校验通过")
+        
         subprocess.run(["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"], check=True)
         subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
         
