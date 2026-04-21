@@ -1,0 +1,203 @@
+name: Upstream Sync with AI Conflict Resolver
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+on:
+  schedule:
+    - cron: '0 */12 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync_latest_from_upstream:
+    name: Sync latest commits from upstream repo
+    runs-on: ubuntu-latest
+    if: ${{ github.event.repository.fork }}
+
+    steps:
+      - uses: actions/checkout@main
+        with:
+          token: ${{ secrets.ACTION_WRITE }}
+          fetch-depth: 0
+
+      - name: Clean issue notice
+        uses: actions-cool/issues-helper@main
+        with:
+          actions: 'close-issues'
+          labels: '🚨 Sync Fail'
+
+      - name: Sync upstream changes
+        id: sync
+        uses: aormsby/Fork-Sync-With-Upstream-action@main
+        continue-on-error: true
+        with:
+          upstream_sync_repo: NousResearch/hermes-agent
+          upstream_sync_branch: main
+          target_sync_branch: main
+          target_repo_token: ${{ secrets.ACTION_WRITE }}
+          test_mode: false
+
+      - name: Setup Python
+        if: steps.sync.outcome == 'failure'
+        uses: actions/setup-python@main
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        if: steps.sync.outcome == 'failure'
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 pyyaml
+
+      - name: Track 2 - Resolve conflicts with AI (Python)
+        id: track2
+        if: steps.sync.outcome == 'failure'
+        continue-on-error: true
+        env:
+          DMXAPI_API_KEY: ${{ secrets.DMXAPI_API_KEY }}
+          QINIU_API_KEY: ${{ secrets.QINIU_API_KEY }}
+          QINIU_MODEL_LIST: ${{ secrets.QINIU_MODEL_LIST }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          BLTCY_API_KEY: ${{ secrets.BLTCY_API_KEY }}
+          BLTCY_PROXY_URL: ${{ secrets.BLTCY_PROXY_URL }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          ZEN_API_KEY: ${{ secrets.ZEN_API_KEY }}
+          BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+          SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+          MODELSCOPE_API_KEY: ${{ secrets.MODELSCOPE_API_KEY }}
+          ATOMGIT_API_KEY: ${{ secrets.ATOMGIT_API_KEY }}
+          ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_NIM_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          ACTION_WRITE: ${{ secrets.ACTION_WRITE }}
+        run: |
+          echo "=== Track 2: Python AI 冲突解决 ==="
+          python custom_scripts/resolve_upstream_conflicts.py
+
+      - name: Setup OpenCode & OhMyOpenCode (Track 3)
+        if: steps.track2.outcome == 'failure'
+        run: |
+          echo "=== Track 2 失败，启动 OpenCode 深度修复 ==="
+          curl -fsSL https://bun.sh/install | bash
+          export PATH="$HOME/.bun/bin:$PATH"
+          npm install -g opencode-ai oh-my-openagent
+          oh-my-opencode install --no-tui --claude=no --gemini=no --copilot=no --skip-auth
+
+      - name: Track 3 - Run OpenCode Agent
+        id: track3
+        if: steps.track2.outcome == 'failure'
+        env:
+          DMXAPI_API_KEY: ${{ secrets.DMXAPI_API_KEY }}
+          QINIU_API_KEY: ${{ secrets.QINIU_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+          BLTCY_API_KEY: ${{ secrets.BLTCY_API_KEY }}
+          BLTCY_PROXY_URL: ${{ secrets.BLTCY_PROXY_URL }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          ZEN_API_KEY: ${{ secrets.ZEN_API_KEY }}
+          BAILIAN_API_KEY: ${{ secrets.BAILIAN_API_KEY }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+          SILICONFLOW_API_KEY: ${{ secrets.SILICONFLOW_API_KEY }}
+          MODELSCOPE_API_KEY: ${{ secrets.MODELSCOPE_API_KEY }}
+          ATOMGIT_API_KEY: ${{ secrets.ATOMGIT_API_KEY }}
+          ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
+          NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_NIM_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          ACTION_WRITE: ${{ secrets.ACTION_WRITE }}
+          GH_TOKEN: ${{ secrets.ACTION_WRITE }}
+        run: |
+          set -euo pipefail
+          
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git fetch origin main
+          git checkout main || git checkout -b main
+          git reset --hard origin/main
+          git clean -fd
+          
+          BEST_MODEL=$(python custom_scripts/pick_best_model.py)
+          SMALL_MODEL=$(python custom_scripts/pick_best_model.py --small)
+          echo "Track 3 选定模型: $BEST_MODEL (轻量: $SMALL_MODEL)"
+          
+          if [ "$BEST_MODEL" = "NO_MODEL_AVAILABLE" ]; then
+            echo "::error::无可用模型，Track 3 终止"
+            exit 1
+          fi
+          
+          python custom_scripts/pick_best_model.py --opencode-config > opencode.json
+          mkdir -p ~/.config/opencode
+          echo '{"providers": {}}' > ~/.config/opencode/oh-my-opencode.json
+          
+          CONFLICTED=$(git diff --name-only --diff-filter=U 2>/dev/null || echo "")
+          if [ -z "$CONFLICTED" ]; then
+            echo "无冲突文件，跳过 Track 3"
+            exit 0
+          fi
+          
+          echo "冲突文件列表:"
+          echo "$CONFLICTED"
+          
+          FIX_SUCCEEDED=false
+          
+          echo "尝试 oh-my-opencode..."
+          oh-my-opencode run --model "$BEST_MODEL" "分析上游同步产生的合并冲突。冲突文件: $CONFLICTED。请智能合并冲突，保留上游的重要更新同时保留本地定制。修复后提交。退出。" 2>&1 | tee opencode_output.log || true
+          
+          if grep -qi "ProviderModelNotFoundError\|Error: Model not found\|session.error\|UnknownError" opencode_output.log; then
+            echo "::warning::oh-my-opencode 运行异常，准备 fallback..."
+          else
+            FIX_SUCCEEDED=true
+          fi
+          
+          if [ "$FIX_SUCCEEDED" = "false" ]; then
+            echo "尝试 opencode run..."
+            opencode run --model "$BEST_MODEL" "解决上游同步的合并冲突。智能合并，保留重要更新。退出。" 2>&1 | tee opencode_output.log || true
+            if ! grep -qi "ProviderModelNotFoundError\|Error: Model not found\|session.error\|UnknownError" opencode_output.log; then
+              FIX_SUCCEEDED=true
+            fi
+          fi
+          
+          rm -f opencode_output.log
+          
+          if [ "$FIX_SUCCEEDED" != "true" ]; then
+            echo "::error::Track 3 AI 修复失败"
+            exit 1
+          fi
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add .
+          if git diff --cached --quiet; then
+            echo "::error::AI 运行完成但未产生任何代码更改"
+            exit 1
+          fi
+          
+          git commit -m "🔀 chore: auto-resolve upstream merge conflicts with OpenCode"
+          git remote set-url origin https://${ACTION_WRITE}@github.com/${{ github.repository }}.git
+          git pull --rebase origin main || true
+          git push origin HEAD:main || { echo "::error::Push failed"; exit 1; }
+          
+          echo "Track 3 修复成功并已推送"
+
+      - name: Sync check
+        if: failure()
+        uses: actions-cool/issues-helper@main
+        with:
+          actions: 'create-issue'
+          title: '🚨 同步失败 | Sync Fail'
+          labels: '🚨 Sync Fail'
+          body: |
+            上游同步工作流失败，Track 2 和 Track 3 AI 修复均未能解决冲突。
+
+            请手动检查并解决冲突。
+
+            Upstream sync workflow failed. Both Track 2 and Track 3 AI fixes could not resolve conflicts.
+
+            Please manually check and resolve conflicts.
+
+            [hermes-agent]: https://github.com/NousResearch/hermes-agent
