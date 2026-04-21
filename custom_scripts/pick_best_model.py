@@ -98,10 +98,10 @@ def fetch_leaderboard_top20() -> Optional[set]:
                 if slug not in slug_best or score > slug_best[slug]:
                     slug_best[slug] = score
             sorted_models = sorted(slug_best.items(), key=lambda x: x[1], reverse=True)
-            top20 = set(slug for slug, _ in sorted_models[:20])
-            save_cached_top20(top20)
-            print(f"[pick_best_model] 排行榜爬取成功: {len(top20)} 个模型", file=sys.stderr)
-            return top20
+            top_models = set(slug for slug, _ in sorted_models[:30])
+            save_cached_top20(top_models)
+            print(f"[pick_best_model] 排行榜爬取成功: {len(top_models)} 个模型", file=sys.stderr)
+            return top_models
     except Exception as e:
         print(f"[pick_best_model] 排行榜爬取失败: {e}", file=sys.stderr)
     
@@ -135,6 +135,11 @@ def pick_model():
     top20 = fetch_leaderboard_top20()
     
     env = os.environ
+    # 调试信息：检查关键环境变量
+    debug_keys = ["DMXAPI_API_KEY", "QINIU_API_KEY", "DEEPSEEK_API_KEY", "MINIMAX_API_KEY", "MINIMAX_CODING_PLAN_API_KEY", "GITHUB_TOKEN", "GH_TOKEN"]
+    for key in debug_keys:
+        if key in env and env[key].strip():
+            print(f"[pick_best_model] 检测到环境变量: {key}", file=sys.stderr)
     providers = []
     
     if env.get("DMXAPI_API_KEY", "").strip():
@@ -193,7 +198,11 @@ def pick_model():
         models = split_env("NVIDIA_NIM_MODEL_LIST", "deepseek-ai/deepseek-v3")
         providers.append(("nvidia-nim", models[0], models[-1], models))
     
-    if env.get("MINIMAX_API_KEY", "").strip():
+    # 支持 MINIMAX_API_KEY 和 MINIMAX_CODING_PLAN_API_KEY
+    minimax_key = env.get("MINIMAX_API_KEY", "").strip() or env.get("MINIMAX_CODING_PLAN_API_KEY", "").strip()
+    if minimax_key:
+        # 设置 MINIMAX_API_KEY 环境变量，确保后续使用
+        os.environ["MINIMAX_API_KEY"] = minimax_key
         models = split_env("MINIMAX_MODEL_LIST", "MiniMax-M2.7")
         providers.append(("minimax", models[0], models[-1], models))
     
@@ -237,6 +246,9 @@ def pick_model():
         priority_order["atomgit"] = 100  # 降低优先级
     
     providers.sort(key=lambda x: priority_order.get(x[0], 999))
+    # 调试信息：显示可用 providers
+    if providers:
+        print(f"[pick_best_model] 可用 providers: {[p[0] for p in providers]}", file=sys.stderr)
     
     provider, model, small, models_list = providers[0]
     print(f"[pick_best_model] 选择: {provider}/{model} (small: {small})", file=sys.stderr)

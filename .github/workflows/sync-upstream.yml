@@ -86,7 +86,7 @@ jobs:
           curl -fsSL https://bun.sh/install | bash
           export PATH="$HOME/.bun/bin:$PATH"
           npm install -g opencode-ai oh-my-openagent
-           oh-my-opencode install --no-tui --claude=no --gemini=no --skip-auth
+          oh-my-opencode install --no-tui --claude=no --gemini=no --copilot=yes --skip-auth
 
       - name: Track 3 - Run OpenCode Agent
         id: track3
@@ -111,6 +111,7 @@ jobs:
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           ACTION_WRITE: ${{ secrets.ACTION_WRITE || github.token }}
           GH_TOKEN: ${{ secrets.ACTION_WRITE || github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           

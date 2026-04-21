@@ -1,0 +1,25 @@
+{
+  "timestamp": 1776790152.8116155,
+  "top20": [
+    "gpt-5-3-codex",
+    "gpt-5-4",
+    "gpt-5-4-mini",
+    "gpt-5-4-mini-medium",
+    "gpt-5-4-mini-non-reasoning",
+    "gpt-5-4-nano",
+    "gpt-5-4-nano-medium",
+    "gpt-5-4-nano-non-reasoning",
+    "gpt-5-4-non-reasoning",
+    "gpt-5-4-pro",
+    "gpt-oss-120b",
+    "gpt-oss-120b-low",
+    "gpt-oss-20b",
+    "gpt-oss-20b-low",
+    "grok-1",
+    "llama-3-1-instruct-405b",
+    "llama-3-2-instruct-11b-vision",
+    "llama-3-2-instruct-90b-vision",
+    "llama-3-3-instruct-70b",
+    "o3"
+  ]
+}

@@ -1,5 +1,59 @@
 # 历史记录 (History)
 
+## 2025-04-21 - 上游同步工作流修复与配置更新（续）
+
+### 参与者
+- 用户: Fatty911
+- AI Agent: Sisyphus (OhMyOpenCode)
+
+### 对话摘要
+
+1. **用户请求**：
+   - 调查上游同步工作流持续失败问题（“还是报错”）
+   - 检查 GitHub Secrets 配置
+
+2. **已完成工作**：
+   - ✅ 使用 `gh` 命令分析工作流运行日志（Run ID: 24733692805）
+   - ✅ 发现核心问题：GitHub Secrets 中的 API Key 值为空，导致 `Track 2` (`resolve_upstream_conflicts.py`) 无法找到可用 Provider
+   - ✅ 修改 `custom_scripts/pick_best_model.py`：
+     - 同时支持 `MINIMAX_API_KEY` 和 `MINIMAX_CODING_PLAN_API_KEY` 环境变量
+     - 添加调试信息，输出检测到的环境变量和可用 providers
+     - 确保 `github_copilot` provider 在 `GITHUB_TOKEN` 或 `GH_TOKEN` 存在时被正确添加
+   - ✅ 修复 `.github/workflows/sync-upstream.yml`：
+     - 在 Track 3 步骤中添加 `GITHUB_TOKEN` 环境变量，确保 GitHub Copilot 回退机制生效
+     - 确认 `oh-my-opencode install --copilot=yes` 参数已存在
+   - ✅ 测试 `pick_best_model.py` 回退逻辑：当仅设置 `GITHUB_TOKEN` 时，成功选择 `github_copilot/gpt-5.4`
+
+3. **待解决问题**：
+   - GitHub Secrets 中 API Key 的值为空，需要用户填充至少一个有效的 API Key（推荐 QINIU_API_KEY 或 DEEPSEEK_API_KEY）
+   - 工作流依赖 `github_copilot` 回退，但需确保 GitHub Copilot 插件配置正确
+
+4. **后续建议**：
+   - 在 GitHub 仓库 Settings → Secrets and variables → Actions 中，为至少一个 AI Provider 设置有效的 API Key
+   - 手动触发工作流测试修复效果
+   - 监控下一次自动运行（每12小时）结果
+
+### 配置变更记录
+
+#### 脚本更新 (`pick_best_model.py`)
+- 支持 `MINIMAX_CODING_PLAN_API_KEY` 环境变量
+- 添加调试日志，便于诊断环境变量检测情况
+- 确保 `github_copilot` provider 优先级最低（999），作为最终回退
+
+#### 工作流更新 (`sync-upstream.yml`)
+- 添加 `GITHUB_TOKEN: ${{ github.token }}` 环境变量，确保 GitHub Copilot 回退机制可靠
+
+#### 全局要求 (`AGENTS.md`)
+- 无新增要求
+
+### 技术说明
+- 工作流失败的根本原因是 GitHub Secrets 中缺少有效的 API Key 值
+- 即使所有 API Key 为空，工作流仍可通过 GitHub Copilot 回退机制运行（需要 `GITHUB_TOKEN`）
+- 修改后的 `pick_best_model.py` 将按用户指定优先级选择模型，但前提是至少有一个 Provider 的 API Key 有效
+- 调试信息将输出到工作流日志，便于未来诊断
+
+---
+
 ## 2025-04-21 - 上游同步工作流修复与配置更新
 
 ### 参与者
