@@ -203,8 +203,35 @@ def pick_model():
         print("NO_MODEL_AVAILABLE", file=sys.stderr)
         return "", "", "", []
     
+    # 优先级排序 (根据用户配置调整)
+    priority_order = {
+        "atomgit": 1,      # 千帆 GLM-5 (大 Agent 优先)
+        "qiniu": 2,        # 千帆 DeepSeek
+        "deepseek": 3,     # DeepSeek 官方
+        "minimax": 4,      # MiniMax 2.7 (小 Agent 优先)
+        "bailian": 5,      # 千帆其他 (阿里百炼)
+        "moonshot": 6,     # 千帆 Kimi
+        "zhipu": 7,        # 智谱 AI
+        "dmxapi": 8,
+        "openai": 9,
+        "openrouter": 10,
+        "xai": 11,
+        "zen": 12,
+        "siliconflow": 13,
+        "modelscope": 14,
+        "nvidia-nim": 15,
+        "bltcy": 16,
+    }
+    
+    # 如果是 --small 模式，调整优先级让 minimax 最优先，atomgit 最后
+    if "--small" in sys.argv:
+        priority_order["minimax"] = 1
+        priority_order["atomgit"] = 100  # 降低优先级
+    
+    providers.sort(key=lambda x: priority_order.get(x[0], 999))
+    
     provider, model, small, models_list = providers[0]
-    print(f"[pick_best_model] 选择: {provider}/{model}", file=sys.stderr)
+    print(f"[pick_best_model] 选择: {provider}/{model} (small: {small})", file=sys.stderr)
     return provider, model, small, models_list
 
 if __name__ == "__main__":

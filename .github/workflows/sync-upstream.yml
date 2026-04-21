@@ -118,9 +118,13 @@ jobs:
           git fetch origin main
           git checkout main || git checkout -b main
           git reset --hard origin/main
-          git clean -fd
-          
-          BEST_MODEL=$(python custom_scripts/pick_best_model.py)
+           git clean -fd
+           
+           # 安装 Python 依赖
+           python -m pip install --upgrade pip
+           pip install requests beautifulsoup4 pyyaml
+           
+           BEST_MODEL=$(python custom_scripts/pick_best_model.py)
           SMALL_MODEL=$(python custom_scripts/pick_best_model.py --small)
           echo "Track 3 选定模型: $BEST_MODEL (轻量: $SMALL_MODEL)"
           
