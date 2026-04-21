@@ -22,6 +22,7 @@ CUSTOM_PROVIDER_INFO = {
     "zhipu": {"base_url": "https://open.bigmodel.cn/api/paas/v4/", "api_key_env": "ZHIPU_API_KEY"},
     "nvidia-nim": {"base_url": "https://integrate.api.nvidia.com/v1", "api_key_env": "NVIDIA_NIM_API_KEY"},
     "minimax": {"base_url": "https://api.minimax.chat/v1", "api_key_env": "MINIMAX_API_KEY"},
+    "github_copilot": {"base_url": "", "api_key_env": "GITHUB_TOKEN"},
 }
 
 DEFAULT_MODELS = {
@@ -40,6 +41,7 @@ DEFAULT_MODELS = {
     "atomgit": ["zai-org/GLM-5"],
     "zhipu": ["glm-4-plus"],
     "nvidia-nim": ["deepseek-ai/deepseek-v3"],
+    "github_copilot": ["gpt-5.4", "claude-opus-4.7", "gpt-5.4-mini", "gpt-5.2-codex"],
 }
 
 MINIMAX_ALLOWED = ["minimax-ccp-2.7", "minimax-m2.7"]
@@ -199,6 +201,11 @@ def pick_model():
         models = split_env("BLTCY_MODEL_LIST", "claude-sonnet-4-20250514")
         providers.append(("bltcy", models[0], models[-1], models))
     
+    # GitHub Copilot fallback (uses GITHUB_TOKEN or GH_TOKEN)
+    if env.get("GITHUB_TOKEN", "").strip() or env.get("GH_TOKEN", "").strip():
+        models = split_env("GITHUB_COPILOT_MODEL_LIST", "gpt-5.4,claude-opus-4.7,gpt-5.4-mini,gpt-5.2-codex")
+        providers.append(("github_copilot", models[0], models[-1], models))
+    
     if not providers:
         print("NO_MODEL_AVAILABLE", file=sys.stderr)
         return "", "", "", []
@@ -221,6 +228,7 @@ def pick_model():
         "modelscope": 14,
         "nvidia-nim": 15,
         "bltcy": 16,
+        "github_copilot": 999,
     }
     
     # 如果是 --small 模式，调整优先级让 minimax 最优先，atomgit 最后
@@ -245,14 +253,20 @@ if __name__ == "__main__":
         provider_config = {}
         if provider in CUSTOM_PROVIDER_INFO:
             info = CUSTOM_PROVIDER_INFO[provider]
-            provider_config = {
-                "npm": "@ai-sdk/openai-compatible",
-                "options": {
-                    "baseURL": info["base_url"],
-                    "apiKey": "{env:" + info["api_key_env"] + "}"
-                },
-                "models": {m: {} for m in models_list}
-            }
+            if provider == "github_copilot":
+                provider_config = {
+                    "npm": "@opencode/plugin-github-copilot",
+                    "models": {m: {} for m in models_list}
+                }
+            else:
+                provider_config = {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "options": {
+                        "baseURL": info["base_url"],
+                        "apiKey": "{env:" + info["api_key_env"] + "}"
+                    },
+                    "models": {m: {} for m in models_list}
+                }
         elif models_list:
             provider_config = {"models": {m: {} for m in models_list}}
         

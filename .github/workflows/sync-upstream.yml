@@ -86,7 +86,7 @@ jobs:
           curl -fsSL https://bun.sh/install | bash
           export PATH="$HOME/.bun/bin:$PATH"
           npm install -g opencode-ai oh-my-openagent
-          oh-my-opencode install --no-tui --claude=no --gemini=no --copilot=no --skip-auth
+           oh-my-opencode install --no-tui --claude=no --gemini=no --skip-auth
 
       - name: Track 3 - Run OpenCode Agent
         id: track3
@@ -133,9 +133,10 @@ jobs:
             exit 1
           fi
           
-          python custom_scripts/pick_best_model.py --opencode-config > opencode.json
-          mkdir -p ~/.config/opencode
-          echo '{"providers": {}}' > ~/.config/opencode/oh-my-opencode.json
+           python custom_scripts/pick_best_model.py --opencode-config > opencode.json
+           mkdir -p ~/.config/opencode
+           cp opencode.json ~/.config/opencode/opencode.json
+           # oh-my-opencode.json will be created by oh-my-opencode install
           
           CONFLICTED=$(git diff --name-only --diff-filter=U 2>/dev/null || echo "")
           if [ -z "$CONFLICTED" ]; then
