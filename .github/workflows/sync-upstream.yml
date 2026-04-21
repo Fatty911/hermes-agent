@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@main
         with:
-          token: ${{ secrets.ACTION_WRITE }}
+          token: ${{ secrets.ACTION_WRITE || github.token }}
           fetch-depth: 0
 
       - name: Clean issue notice
@@ -36,7 +36,7 @@ jobs:
           upstream_sync_repo: NousResearch/hermes-agent
           upstream_sync_branch: main
           target_sync_branch: main
-          target_repo_token: ${{ secrets.ACTION_WRITE }}
+          target_repo_token: ${{ secrets.ACTION_WRITE || github.token }}
           test_mode: false
 
       - name: Setup Python
@@ -74,7 +74,7 @@ jobs:
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
           NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_NIM_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
-          ACTION_WRITE: ${{ secrets.ACTION_WRITE }}
+          ACTION_WRITE: ${{ secrets.ACTION_WRITE || github.token }}
         run: |
           echo "=== Track 2: Python AI 冲突解决 ==="
           python custom_scripts/resolve_upstream_conflicts.py
@@ -109,8 +109,8 @@ jobs:
           ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
           NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_NIM_API_KEY }}
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
-          ACTION_WRITE: ${{ secrets.ACTION_WRITE }}
-          GH_TOKEN: ${{ secrets.ACTION_WRITE }}
+          ACTION_WRITE: ${{ secrets.ACTION_WRITE || github.token }}
+          GH_TOKEN: ${{ secrets.ACTION_WRITE || github.token }}
         run: |
           set -euo pipefail
           
