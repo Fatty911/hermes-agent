@@ -12,6 +12,7 @@ LEADERBOARD_CACHE = ".leaderboard_cache.json"
 CUSTOM_PROVIDER_INFO = {
     "dmxapi": {"base_url": "https://api.dmxapi.com/v1", "api_key_env": "DMXAPI_API_KEY"},
     "qiniu": {"base_url": "https://api.qnaigc.com/v1", "api_key_env": "QINIU_API_KEY"},
+    "qianfan": {"base_url": "https://qianfan.baidubce.com/v2", "api_key_env": "QIANFAN_CODING_API_KEY", "proxy_env": "QIANFAN_CODING_PROXY_URL"},
     "xai": {"base_url": "https://api.x.ai/v1", "api_key_env": "XAI_API_KEY"},
     "bailian": {"base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1", "api_key_env": "BAILIAN_API_KEY"},
     "moonshot": {"base_url": "https://api.moonshot.cn/v1", "api_key_env": "MOONSHOT_API_KEY"},
@@ -27,7 +28,8 @@ CUSTOM_PROVIDER_INFO = {
 
 DEFAULT_MODELS = {
     "dmxapi": ["claude-sonnet-4-20250514", "gpt-4.1", "gemini-2.5-pro-preview-05-06"],
-    "qiniu": ["kimi/kimi-k2.5", "deepseek/DeepSeek-V3-0324", "Qwen/Qwen3-235B-A22B"],
+    "qiniu": ["Qwen/Qwen3-235B-A22B", "deepseek/DeepSeek-V3-0324"],
+    "qianfan": ["kimi-k2.5", "deepseek-v3", "glm-5"],
     "xai": ["grok-3-latest", "grok-3-mini-latest"],
     "openrouter": ["anthropic/claude-sonnet-4", "google/gemini-2.5-pro-preview"],
     "openai": ["gpt-4.1", "gpt-4o"],
@@ -150,6 +152,11 @@ def pick_model():
         models = split_env("QINIU_MODEL_LIST", "Qwen/Qwen3-235B-A22B")
         providers.append(("qiniu", models[0], models[-1], models))
     
+    # 百度千帆 (QIANFAN_CODING_API_KEY)
+    if env.get("QIANFAN_CODING_API_KEY", "").strip():
+        models = split_env("QIANFAN_MODEL_LIST", "kimi-k2.5,deepseek-v3,glm-5")
+        providers.append(("qianfan", models[0], models[-1], models))
+    
     if env.get("XAI_API_KEY", "").strip():
         models = split_env("XAI_MODEL_LIST", "grok-3-latest,grok-3-mini-latest")
         providers.append(("xai", models[0], models[-1], models))
@@ -220,13 +227,15 @@ def pick_model():
         return "", "", "", []
     
     # 优先级排序 (根据用户配置调整)
+    # 大 Agent: 百度千帆 (kimi-k2.5优先) > 百度千帆 (deepseek) > DeepSeek官方 > MiniMax > 其他
+    # 小 Agent: MiniMax > 百度千帆 > 其他
     priority_order = {
-        "atomgit": 1,      # 千帆 GLM-5 (大 Agent 优先)
-        "qiniu": 2,        # 千帆 DeepSeek
-        "deepseek": 3,     # DeepSeek 官方
-        "minimax": 4,      # MiniMax 2.7 (小 Agent 优先)
-        "bailian": 5,      # 千帆其他 (阿里百炼)
-        "moonshot": 6,     # 千帆 Kimi
+        "qianfan": 1,      # 百度千帆 kimi-k2.5 (大 Agent 最优先)
+        "deepseek": 2,     # DeepSeek 官方
+        "minimax": 3,      # MiniMax 2.7 (小 Agent 优先)
+        "qiniu": 4,        # 七牛云
+        "bailian": 5,      # 阿里百炼
+        "moonshot": 6,     # Moonshot
         "zhipu": 7,        # 智谱 AI
         "dmxapi": 8,
         "openai": 9,
@@ -237,13 +246,14 @@ def pick_model():
         "modelscope": 14,
         "nvidia-nim": 15,
         "bltcy": 16,
+        "atomgit": 17,     # 降低优先级
         "github_copilot": 999,
     }
     
-    # 如果是 --small 模式，调整优先级让 minimax 最优先，atomgit 最后
+    # 如果是 --small 模式，调整优先级让 minimax 最优先
     if "--small" in sys.argv:
         priority_order["minimax"] = 1
-        priority_order["atomgit"] = 100  # 降低优先级
+        priority_order["qianfan"] = 2  # 小 Agent 模式下千帆排第二
     
     providers.sort(key=lambda x: priority_order.get(x[0], 999))
     # 调试信息：显示可用 providers

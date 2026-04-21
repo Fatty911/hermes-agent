@@ -59,6 +59,8 @@ jobs:
           DMXAPI_API_KEY: ${{ secrets.DMXAPI_API_KEY }}
           QINIU_API_KEY: ${{ secrets.QINIU_API_KEY }}
           QINIU_MODEL_LIST: ${{ secrets.QINIU_MODEL_LIST }}
+          QIANFAN_CODING_API_KEY: ${{ secrets.QIANFAN_CODING_API_KEY }}
+          QIANFAN_CODING_PROXY_URL: ${{ secrets.QIANFAN_CODING_PROXY_URL }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           BLTCY_API_KEY: ${{ secrets.BLTCY_API_KEY }}
           BLTCY_PROXY_URL: ${{ secrets.BLTCY_PROXY_URL }}
@@ -94,6 +96,8 @@ jobs:
         env:
           DMXAPI_API_KEY: ${{ secrets.DMXAPI_API_KEY }}
           QINIU_API_KEY: ${{ secrets.QINIU_API_KEY }}
+          QIANFAN_CODING_API_KEY: ${{ secrets.QIANFAN_CODING_API_KEY }}
+          QIANFAN_CODING_PROXY_URL: ${{ secrets.QIANFAN_CODING_PROXY_URL }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
           BLTCY_API_KEY: ${{ secrets.BLTCY_API_KEY }}
           BLTCY_PROXY_URL: ${{ secrets.BLTCY_PROXY_URL }}
