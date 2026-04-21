@@ -27,7 +27,7 @@ CUSTOM_PROVIDER_INFO = {
 
 DEFAULT_MODELS = {
     "dmxapi": ["claude-sonnet-4-20250514", "gpt-4.1", "gemini-2.5-pro-preview-05-06"],
-    "qiniu": ["Qwen/Qwen3-235B-A22B", "deepseek/DeepSeek-V3-0324"],
+    "qiniu": ["kimi/kimi-k2.5", "deepseek/DeepSeek-V3-0324", "Qwen/Qwen3-235B-A22B"],
     "xai": ["grok-3-latest", "grok-3-mini-latest"],
     "openrouter": ["anthropic/claude-sonnet-4", "google/gemini-2.5-pro-preview"],
     "openai": ["gpt-4.1", "gpt-4o"],
