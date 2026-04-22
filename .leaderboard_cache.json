@@ -1,6 +1,13 @@
 {
-  "timestamp": 1776790152.8116155,
+  "timestamp": 1776828768.5394862,
   "top20": [
+    "gemini-2-5-flash-lite-preview-09-2025-reasoning",
+    "gemini-3-flash",
+    "gemini-3-flash-reasoning",
+    "gemma-4-26b-a4b",
+    "gemma-4-26b-a4b-non-reasoning",
+    "gemma-4-31b",
+    "gemma-4-e4b",
     "gpt-5-3-codex",
     "gpt-5-4",
     "gpt-5-4-mini",
@@ -20,6 +27,9 @@
     "llama-3-2-instruct-11b-vision",
     "llama-3-2-instruct-90b-vision",
     "llama-3-3-instruct-70b",
+    "llama-4-maverick",
+    "llama-4-scout",
+    "muse-spark",
     "o3"
   ]
 }
