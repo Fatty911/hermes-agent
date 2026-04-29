@@ -1,8 +1,8 @@
 {
-  "timestamp": 1777386895.7651515,
+  "timestamp": 1777434770.4867966,
   "top20": [
-    "gemini-3-flash-reasoning",
-    "gemma-4-26b-a4b",
+    "gemma-4-26b-a4b-non-reasoning",
+    "gemma-4-31b-non-reasoning",
     "gpt-5-3-codex",
     "gpt-5-4",
     "gpt-5-4-mini",
