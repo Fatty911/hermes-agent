@@ -1,10 +1,10 @@
 {
-  "timestamp": 1777472615.247119,
+  "timestamp": 1777521237.8060846,
   "top20": [
-    "gemini-2-5-pro",
-    "gemma-4-26b-a4b",
+    "gemma-4-31b",
     "gpt-5-3-codex",
     "gpt-5-4",
+    "gpt-5-4-low",
     "gpt-5-4-mini",
     "gpt-5-4-mini-medium",
     "gpt-5-4-mini-non-reasoning",
