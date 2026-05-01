@@ -1,7 +1,6 @@
 {
-  "timestamp": 1777558706.3178937,
+  "timestamp": 1777608311.0954764,
   "top20": [
-    "gemma-4-31b",
     "gpt-5-3-codex",
     "gpt-5-4",
     "gpt-5-4-low",
@@ -18,6 +17,7 @@
     "gpt-5-5-low",
     "gpt-5-5-medium",
     "gpt-5-5-non-reasoning",
+    "gpt-5-5-pro",
     "gpt-oss-120b",
     "gpt-oss-120b-low",
     "gpt-oss-20b",
