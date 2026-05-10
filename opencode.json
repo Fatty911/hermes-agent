@@ -62,6 +62,26 @@
         "deepseek-v4-flash",
         "qwen3.5-397b-a17b"
       ]
+    },
+    "mimo": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Xiaomi MiMo",
+      "options": {
+        "baseURL": "https://api.xiaomimimo.com/v1",
+        "apiKey": "{env:XIAOMI_MIMO_API_KEY}"
+      },
+      "models": {
+        "mimo-v2.5-pro": {
+          "id": "mimo-v2.5-pro",
+          "limit": {
+            "context": 1048576,
+            "output": 131072
+          }
+        }
+      },
+      "whitelist": [
+        "mimo-v2.5-pro"
+      ]
     }
   },
   "model": "qianfan-coding-plan/glm-5.1",
