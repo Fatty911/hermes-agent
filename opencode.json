@@ -18,5 +18,9 @@
     }
   },
   "model": "qianfan/kimi-k2.5",
-  "small_model": "qianfan/glm-5"
+  "small_model": "qianfan/glm-5",
+  "disabled_providers": [
+    "alibaba-tokenplan",
+    "zhipu"
+  ]
 }
