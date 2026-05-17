@@ -249,6 +249,7 @@ _SERVER_DISCONNECT_PATTERNS = [
     "network connection lost",
     "unexpected eof",
     "incomplete chunked read",
+    "bad gateway",
 ]
 
 
