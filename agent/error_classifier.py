@@ -116,6 +116,10 @@ _RATE_LIMIT_PATTERNS = [
     "throttlingexception",
     "too many concurrent requests",
     "servicequotaexceededexception",
+    # Chinese provider patterns
+    "限流",
+    "小时限制",
+    "每周限制",
 ]
 
 # Usage-limit patterns that need disambiguation (could be billing OR rate_limit)
@@ -124,6 +128,11 @@ _USAGE_LIMIT_PATTERNS = [
     "quota",
     "limit exceeded",
     "key limit exceeded",
+    # Chinese provider patterns (Alibaba Bailian, Qianfan, Volcengine, etc.)
+    "超过套餐",
+    "用量已超过",
+    "配额",
+    "额度",
 ]
 
 # Patterns confirming usage limit is transient (not billing)
@@ -136,6 +145,9 @@ _USAGE_LIMIT_TRANSIENT_SIGNALS = [
     "requests remaining",
     "periodic",
     "window",
+    # Chinese provider transient signals
+    "请等用量刷新",
+    "刷新后使用",
 ]
 
 # Payload-too-large patterns detected from message text (no status_code attr).
@@ -205,6 +217,9 @@ _AUTH_PATTERNS = [
     "token expired",
     "token revoked",
     "access denied",
+    # Coding Plan gateway auth failures (Alibaba Bailian, etc.)
+    "remote validation failed",
+    "authentication requests failed",
 ]
 
 # Anthropic thinking block signature patterns
