@@ -89,6 +89,7 @@ class ClassifiedError:
 _BILLING_PATTERNS = [
     "insufficient credits",
     "insufficient_quota",
+    "insufficient account balance",
     "credit balance",
     "credits have been exhausted",
     "top up your credits",
