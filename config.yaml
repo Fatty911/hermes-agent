@@ -1,5 +1,5 @@
 FEISHU_HOME_CHANNEL: oc_80295cbd51ffb14e7651b8c805e78b37
-_config_version: 26
+_config_version: 29
 agent:
   api_max_retries: 2
   clarify_timeout: 600
@@ -138,6 +138,13 @@ auxiliary:
     model: ''
     provider: auto
     timeout: 120
+  tts_audio_tags:
+    api_key: ''
+    base_url: ''
+    extra_body: {}
+    model: ''
+    provider: auto
+    timeout: 30
   vision:
     api_key: ''
     base_url: ''
@@ -198,6 +205,7 @@ command_allowlist:
 - git force push (rewrites remote history)
 compression:
   abort_on_summary_failure: false
+  codex_gpt55_autoraise: true
   enabled: true
   hygiene_hard_message_limit: 400
   protect_first_n: 3
@@ -222,6 +230,12 @@ curator:
   prune_builtins: true
   stale_after_days: 30
 dashboard:
+  basic_auth:
+    password: ''
+    password_hash: ''
+    secret: ''
+    session_ttl_seconds: 0
+    username: ''
   oauth:
     client_id: ''
     portal_url: ''
@@ -260,6 +274,20 @@ discord:
   require_mention: true
   server_actions: ''
   thread_require_mention: false
+  voice_fx:
+    ack_enabled: true
+    ack_phrases:
+    - Let me look into that.
+    - One moment.
+    - Checking on that now.
+    - Give me a sec.
+    - On it.
+    ambient_enabled: true
+    ambient_gain: 0.18
+    ambient_path: ''
+    duck_gain: 0.06
+    enabled: false
+    speech_gain: 1.0
 display:
   background_process_notifications: all
   bell_on_complete: false
@@ -317,26 +345,36 @@ display:
     first_lines: 2
     last_lines: 2
 fallback_providers:
-- model: moonshotai/kimi-k2.6
+- model: nvidia/nemotron-3-ultra-550b-a55b
   provider: nvidia-nim
-- model: google/gemma-4-31b-it
+- model: z-ai/glm-5.1
+  provider: nvidia-nim
+- model: moonshotai/kimi-k2.6
   provider: nvidia-nim
 - model: nvidia/nemotron-3-super-120b-a12b
   provider: nvidia-nim
-- model: nvidia/llama-3.1-nemotron-ultra-253b-v1
-  provider: nvidia-nim
-- model: moonshotai/kimi-k2-instruct-0905
+- model: google/gemma-4-31b-it
   provider: nvidia-nim
 - model: openrouter/free
   provider: openrouter
 - model: deepseek/deepseek-r1:free
   provider: openrouter
-- model: google/gemma-4-31b-it:free
+- model: meta-llama/llama-3.3-70b-instruct:free
   provider: openrouter
 - model: nvidia/nemotron-3-super-120b-a12b:free
   provider: openrouter
+- model: qwen/qwen3-next-80b-a3b-instruct:free
+  provider: openrouter
+- model: z-ai/glm-4.5-air:free
+  provider: openrouter
 - model: kimi-k2.6
   provider: volcengine-coding
+- model: deepseek-v4-pro
+  provider: volcengine-coding
+- model: deepseek-v4-pro
+  provider: deepseek-official
+- model: mimo-v2.5-pro
+  provider: mimo
 file_read_max_chars: 100000
 gateway:
   media_delivery_allow_dirs: []
@@ -387,6 +425,7 @@ mattermost:
   channel_prompts: {}
   free_response_channels: ''
   require_mention: true
+max_concurrent_sessions: null
 memory:
   flush_min_turns: 6
   memory_char_limit: 2200
@@ -395,9 +434,25 @@ memory:
   provider: neonpg_hotstandby
   user_char_limit: 1375
   user_profile_enabled: true
+  write_approval: false
 model:
   default: moonshotai/kimi-k2.6
   fallback:
+  - key_env: NVIDIA_API_KEY
+    model: nvidia/llama-3.1-nemotron-ultra-253b-v1
+    provider: nvidia-nim
+  - key_env: NVIDIA_API_KEY
+    model: nvidia/nemotron-3-ultra-550b-a55b
+    provider: nvidia-nim
+  - key_env: NVIDIA_API_KEY
+    model: z-ai/glm-5.1
+    provider: nvidia-nim
+  - key_env: NVIDIA_API_KEY
+    model: moonshotai/kimi-k2.6
+    provider: nvidia-nim
+  - key_env: NVIDIA_API_KEY
+    model: nvidia/nemotron-3-super-120b-a12b
+    provider: nvidia-nim
   - key_env: NVIDIA_API_KEY
     model: google/gemma-4-31b-it
     provider: nvidia-nim
@@ -405,15 +460,22 @@ model:
     provider: openrouter
   - model: deepseek/deepseek-r1:free
     provider: openrouter
-  - model: google/gemma-4-31b-it:free
+  - model: meta-llama/llama-3.3-70b-instruct:free
     provider: openrouter
   - model: nvidia/nemotron-3-super-120b-a12b:free
     provider: openrouter
-  - key_env: NVIDIA_API_KEY
-    model: nvidia/llama-3.1-nemotron-ultra-253b-v1
-    provider: nvidia-nim
+  - model: qwen/qwen3-next-80b-a3b-instruct:free
+    provider: openrouter
+  - model: z-ai/glm-4.5-air:free
+    provider: openrouter
   - model: kimi-k2.6
     provider: volcengine-coding
+  - model: deepseek-v4-pro
+    provider: volcengine-coding
+  - model: deepseek-v4-pro
+    provider: deepseek-official
+  - model: mimo-v2.5-pro
+    provider: mimo
   key_env: NVIDIA_API_KEY
   provider: nous
 model_aliases:
@@ -476,6 +538,7 @@ model_catalog:
 network:
   force_ipv4: false
 onboarding:
+  profile_build: ask
   seen:
     busy_input_prompt: true
 openrouter:
@@ -612,6 +675,7 @@ skills:
   inline_shell: false
   inline_shell_timeout: 10
   template_vars: true
+  write_approval: false
 slack:
   allowed_channels: ''
   channel_prompts: {}
@@ -704,6 +768,11 @@ tts:
   elevenlabs:
     model_id: eleven_multilingual_v2
     voice_id: pNInz6obpgDQGcFmaJgB
+  gemini:
+    audio_tags: false
+    model: gemini-2.5-flash-preview-tts
+    persona_prompt_file: ''
+    voice: Kore
   mistral:
     model: voxtral-mini-tts-2603
     voice_id: c69964a6-ab8b-4f8a-9465-ec0925096ec8
@@ -725,6 +794,7 @@ tts:
     voice_id: eve
 updates:
   backup_keep: 5
+  non_interactive_local_changes: stash
   pre_update_backup: false
 voice:
   auto_tts: false
