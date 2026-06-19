@@ -8,7 +8,7 @@ agent:
   environment_probe: true
   gateway_auto_continue_freshness: 3600
   gateway_notify_interval: 180
-  gateway_timeout: 3600
+  gateway_timeout: 7200
   gateway_timeout_warning: 1800
   image_input_mode: auto
   max_tokens: 8192
@@ -20,6 +20,37 @@ agent:
     concise: You are a concise assistant. Keep responses brief and to the point.
     creative: You are a creative assistant. Think outside the box and offer innovative
       solutions.
+    family-assistant: '你是家庭智能助手，在微信里帮家人管理备忘和提醒。语气亲切温暖，像家人一样自然交流。
+
+      回复汉语为主，简洁明了，适合手机微信阅读。
+
+
+      **备忘管理规则（严格执行）**：
+
+      1. 使用看板（kanban_* 工具）管理所有备忘和待办，不使用 memory 存储备忘。
+
+      2. 仅当用户明确说「添加备忘」「记一下」「提醒我」「帮我记住」等时才创建看板任务。
+
+      3. 普通闲聊、问候、技术讨论一律不创建备忘。
+
+      4. 查询备忘时，默认只显示未完成项（active），不显示已完成项。用户说「显示已完成的」或「所有备忘」时才展示已完成。
+
+      5. mark_kanban_complete 标记完成后，下次查询默认不再列出。
+
+      6. 支持「提醒我 X 时间做 Y」→ 创建看板任务 + 设置 cronjob 定时提醒。
+
+      7. 用「📋」「✅」「⏳」「🔔」等 emoji 让列表更易读，但不过度。
+
+      **编程请求路由（严格执行）**：
+
+      当用户提到以下内容时，你不是编程助手，必须调用 wechat-code-bridge 技能， 通过 OpenCode 处理——严禁自己直接修改代码：
+
+      - 要求修改、添加、删除代码 - 提到具体项目名（如 crawl_cars、hermes-agent）并要求操作 - 要求修复 bug、添加功能、重构、写测试
+      - 要求 review 代码、创建 PR、合并分支
+
+      操作流程：收到编程请求 → 回复简短确认 → terminal 执行 opencode-bridge.sh → 返回结果摘要。全程不自己写代码。
+
+      '
     helpful: You are a helpful, friendly AI assistant.
     hype: YOOO LET'S GOOOO!!! 🔥🔥🔥 I am SO PUMPED to help you today! Every question
       is AMAZING and we're gonna CRUSH IT together! This is gonna be LEGENDARY! ARE
@@ -210,7 +241,7 @@ compression:
   hygiene_hard_message_limit: 400
   protect_first_n: 3
   protect_last_n: 25
-  summary_model: nvidia-nim/minimaxai/minimax-m2.7
+  summary_model: nvidia-nim/nvidia/nemotron-3-super-120b-a12b
   target_ratio: 0.25
   threshold: 0.85
 context:
@@ -303,7 +334,7 @@ display:
   language: en
   persistent_output: true
   persistent_output_max_lines: 200
-  personality: kawaii
+  personality: family-assistant
   platforms:
     discord:
       streaming: false
@@ -355,18 +386,6 @@ fallback_providers:
   provider: nvidia-nim
 - model: google/gemma-4-31b-it
   provider: nvidia-nim
-- model: openrouter/free
-  provider: openrouter
-- model: deepseek/deepseek-r1:free
-  provider: openrouter
-- model: meta-llama/llama-3.3-70b-instruct:free
-  provider: openrouter
-- model: nvidia/nemotron-3-super-120b-a12b:free
-  provider: openrouter
-- model: qwen/qwen3-next-80b-a3b-instruct:free
-  provider: openrouter
-- model: z-ai/glm-4.5-air:free
-  provider: openrouter
 - model: kimi-k2.6
   provider: volcengine-coding
 - model: deepseek-v4-pro
@@ -379,7 +398,7 @@ file_read_max_chars: 100000
 gateway:
   media_delivery_allow_dirs: []
   strict: false
-  trust_recent_files: true
+  trust_recent_files: false
   trust_recent_files_seconds: 600
 goals:
   max_turns: 20
@@ -428,11 +447,11 @@ mattermost:
 max_concurrent_sessions: null
 memory:
   flush_min_turns: 6
-  memory_char_limit: 2200
+  memory_char_limit: 32000
   memory_enabled: true
   nudge_interval: 10
   provider: neonpg_hotstandby
-  user_char_limit: 1375
+  user_char_limit: 8000
   user_profile_enabled: true
   write_approval: false
 model:
@@ -456,18 +475,6 @@ model:
   - key_env: NVIDIA_API_KEY
     model: google/gemma-4-31b-it
     provider: nvidia-nim
-  - model: openrouter/free
-    provider: openrouter
-  - model: deepseek/deepseek-r1:free
-    provider: openrouter
-  - model: meta-llama/llama-3.3-70b-instruct:free
-    provider: openrouter
-  - model: nvidia/nemotron-3-super-120b-a12b:free
-    provider: openrouter
-  - model: qwen/qwen3-next-80b-a3b-instruct:free
-    provider: openrouter
-  - model: z-ai/glm-4.5-air:free
-    provider: openrouter
   - model: kimi-k2.6
     provider: volcengine-coding
   - model: deepseek-v4-pro
@@ -715,7 +722,7 @@ telegram:
   reactions: false
 terminal:
   auto_source_bashrc: true
-  backend: modal
+  backend: local
   container_cpu: 1
   container_disk: 51200
   container_memory: 5120
