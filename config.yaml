@@ -386,8 +386,6 @@ fallback_providers:
   provider: nvidia-nim
 - model: google/gemma-4-31b-it
   provider: nvidia-nim
-- model: kimi-k2.6
-  provider: volcengine-coding
 - &id001
   model: openrouter/free
   provider: openrouter
@@ -406,6 +404,8 @@ fallback_providers:
 - &id006
   model: z-ai/glm-4.5-air:free
   provider: openrouter
+- model: kimi-k2.6
+  provider: volcengine-coding
 - model: deepseek-v4-pro
   provider: volcengine-coding
 - model: deepseek-v4-pro
