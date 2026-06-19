@@ -213,6 +213,7 @@ browser:
     session_key: ''
     user_id: ''
   cdp_url: ''
+  cloud_provider: local
   command_timeout: 30
   dialog_policy: must_respond
   dialog_timeout_s: 300
@@ -376,6 +377,18 @@ display:
     first_lines: 2
     last_lines: 2
 fallback_providers:
+- model: openrouter/free
+  provider: openrouter
+- model: deepseek/deepseek-r1:free
+  provider: openrouter
+- model: meta-llama/llama-3.3-70b-instruct:free
+  provider: openrouter
+- model: nvidia/nemotron-3-super-120b-a12b:free
+  provider: openrouter
+- model: qwen/qwen3-next-80b-a3b-instruct:free
+  provider: openrouter
+- model: z-ai/glm-4.5-air:free
+  provider: openrouter
 - model: nvidia/nemotron-3-ultra-550b-a55b
   provider: nvidia-nim
 - model: z-ai/glm-5.1
@@ -386,24 +399,6 @@ fallback_providers:
   provider: nvidia-nim
 - model: google/gemma-4-31b-it
   provider: nvidia-nim
-- &id001
-  model: openrouter/free
-  provider: openrouter
-- &id002
-  model: deepseek/deepseek-r1:free
-  provider: openrouter
-- &id003
-  model: meta-llama/llama-3.3-70b-instruct:free
-  provider: openrouter
-- &id004
-  model: nvidia/nemotron-3-super-120b-a12b:free
-  provider: openrouter
-- &id005
-  model: qwen/qwen3-next-80b-a3b-instruct:free
-  provider: openrouter
-- &id006
-  model: z-ai/glm-4.5-air:free
-  provider: openrouter
 - model: kimi-k2.6
   provider: volcengine-coding
 - model: deepseek-v4-pro
@@ -473,8 +468,18 @@ memory:
   user_profile_enabled: true
   write_approval: false
 model:
-  default: moonshotai/kimi-k2.6
+  default: openrouter/free
   fallback:
+  - model: openrouter/free
+    provider: openrouter
+  - model: deepseek/deepseek-r1:free
+    provider: openrouter
+  - model: meta-llama/llama-3.3-70b-instruct:free
+    provider: openrouter
+  - model: nvidia/nemotron-3-super-120b-a12b:free
+    provider: openrouter
+  - model: z-ai/glm-4.5-air:free
+    provider: openrouter
   - key_env: NVIDIA_API_KEY
     model: nvidia/llama-3.1-nemotron-ultra-253b-v1
     provider: nvidia-nim
@@ -493,12 +498,6 @@ model:
   - key_env: NVIDIA_API_KEY
     model: google/gemma-4-31b-it
     provider: nvidia-nim
-  - *id001
-  - *id002
-  - *id003
-  - *id004
-  - *id005
-  - *id006
   - model: kimi-k2.6
     provider: volcengine-coding
   - model: deepseek-v4-pro
@@ -508,7 +507,7 @@ model:
   - model: mimo-v2.5-pro
     provider: mimo
   key_env: NVIDIA_API_KEY
-  provider: nous
+  provider: openrouter
 model_aliases:
   atlas:
     model: hy3-preview
