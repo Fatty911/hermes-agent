@@ -388,6 +388,24 @@ fallback_providers:
   provider: nvidia-nim
 - model: kimi-k2.6
   provider: volcengine-coding
+- &id001
+  model: openrouter/free
+  provider: openrouter
+- &id002
+  model: deepseek/deepseek-r1:free
+  provider: openrouter
+- &id003
+  model: meta-llama/llama-3.3-70b-instruct:free
+  provider: openrouter
+- &id004
+  model: nvidia/nemotron-3-super-120b-a12b:free
+  provider: openrouter
+- &id005
+  model: qwen/qwen3-next-80b-a3b-instruct:free
+  provider: openrouter
+- &id006
+  model: z-ai/glm-4.5-air:free
+  provider: openrouter
 - model: deepseek-v4-pro
   provider: volcengine-coding
 - model: deepseek-v4-pro
@@ -475,6 +493,12 @@ model:
   - key_env: NVIDIA_API_KEY
     model: google/gemma-4-31b-it
     provider: nvidia-nim
+  - *id001
+  - *id002
+  - *id003
+  - *id004
+  - *id005
+  - *id006
   - model: kimi-k2.6
     provider: volcengine-coding
   - model: deepseek-v4-pro
