@@ -3,15 +3,18 @@
 ## 配置修改必须验证（关键）
 
 - **改任何软件配置后必须验证是否正确**，包括但不限于：OpenCode+OMO、Hermes-Agent、KiloCode、系统 cron、Git hooks 等
-- **验证方法**：改完配置后立即执行相关命令确认无报错（如 `opencode --version`、`python3 -c "import json; json.load(open('config.json'))"`、`crontab -l` 等）
-- **禁止**：改完配置直接同步推送而不验证，导致线上环境配置损坏
+- **验证方法**：改完配置后**必须立即运行** `python3 ~/.config/opencode/scripts/validate-all-configs.py`，通过后再同步
+- **校验脚本覆盖**：Ghost provider、白名单缺失、model/fallback 重复、model.fallback 与 fallback_providers 不一致、YAML 语法错误、auth.json 有 key 但未登记的 provider
+- **验证失败则禁止同步推送**，必须修到全 PASS
 - **已有案例**：误删 `output` 字段导致 OpenCode 无法启动、cron 升级脚本 CRLF 换行符导致执行失败、plugin 字段重复导致 OMO 被禁用
 - **已有案例**：`disabled_providers` 含不存在的 provider 名导致 OpenCode 计数错乱、本应禁用的 Provider 又显示出来
+- **已有案例**：`target_ratio` 缩进错误导致 Hermes config.yaml 解析失败→fallback 到默认配置→所有自定义 fallback 被忽略
+- **已有案例**：`fallback_providers` 缩进错误导致 Hermes 静默降级
 
 ## 禁止操作（关键）
 
 - **禁止添加用户未明确要求的新模型**：不自行判断"某个模型可能可用"就往 provider 白名单里加，必须等用户明确确认
-- **禁止模型残留**：将某模型替换为同系列新版本时，必须从同一 provider 的白名单中**删除旧模型**。如 `glm-5.1 → glm-latest`、`qwen3.6-plus → qwen3.7-max`，不能新旧并存
+- **禁止模型残留**：将某模型替换为同系列新版本时，必须从同一 provider 的白名单中**删除旧模型**。如 `glm-5.1 → glm-latest`、`qwen3.6-plus → qwen3.7-max`、`nemotron-3-super → nemotron-3-ultra`、`minimax-m2.7 → minimax-m3`，不能新旧并存。**此规则跨所有配置文件和所有 Agent 工具统一执行**。
 - **禁止未联网查证**：修改模型配置前必须联网查询官方文档确认模型是否真实可用，严禁凭记忆或猜测添加模型
 - **已有案例**：`kimi-k2.7-code` 未经验证加入 volcengine 白名单导致 Coding Plan 报不兼容、`glm-5.1` 和 `glm-latest` 共存违反替换规则
 
@@ -54,21 +57,56 @@
 - **免费端点优先**：所有 fallback 链中，免费端点（NIM、OpenRouter free、Cloudflare、Modal、ModelScope）排在付费端点前面
 - **弱模型不进评审链**：新增模型时，如果其在 Arena 或 Artificial Analysis 排行榜上排名低于当前已有模型列表中排名最低的模型，则不添加（排行榜随时间变化，不设固定门槛）
 
+## 上下文窗口 Fallback 方向（关键）
+
+> ⚠️ **核心原则：小窗口模型 fallback 到大窗口模型没问题，大窗口 fallback 到小窗口会触发上下文压缩（context compression），严重降智。**
+
+- **kimi-k2.6 上下文仅 262K，只用于评审（ReviewKimi），禁止作为任何 Agent 工具主模型的 fallback**
+- **从所有 Agent 工具的主模型 fallback 链中移除 kimi-k2.6**
+- **主模型选择策略**：对于任意 Agent 工具，如果当前主模型的能力评分与 kimi-k2.6 相近（同属一个档次），**优先将主模型切换为 kimi-k2.6**。原因：262K 模型报错后可 fallback 到 1M 模型（安全）；反之 1M 模型 fallback 到 262K 模型会直接触发压缩导致严重降智
+- **评审 Agent 中保留 kimi-k2.6**：ReviewKimi 以 kimi-k2.6 为主模型（评审 prompt 通常较短，不触发压缩）
+- **主模型切换规则**：通过对话切换主模型时，把之前的主模型放回 fallback 列表，把新的主模型从 fallback 列表剪切到主模型位置——严禁重复
+
 ## Provider 优先级规则
 
 所有 Agent 工具的 fallback 链都应遵循以下优先级顺序：
 
 | 优先级 | 类型 | 示例 |
 |---|---|---|
-| 1 | 免费端点 | NVIDIA NIM、OpenRouter free、OpenCode Zen free、Cloudflare Workers AI、Modal、ModelScope |
+| 1 | 免费端点 | NVIDIA NIM、OpenRouter free、OpenCode Zen free、Cloudflare Workers AI、ModelScope |
 | 2 | 单家 CodingPlan/TokenPlan | GLM CodingPlan、Kimi CodingPlan、MiMo TokenPlan |
 | 3 | 聚合平台 CodingPlan/TokenPlan | 火山方舟、腾讯云、阿里云百炼、百度千帆 |
-| 4 | 单家按量付费 | DeepSeek 官方、GLM 按量、Kimi 按量、MiMo 按量 |
-| 5 | 聚合平台按量付费 | 火山方舟按量、阿里云按量 |
+| 4 | 便宜按量付费 | DeepSeek 官方、MiMo 官方 |
+| 5 | 中等按量付费 | 国产模型比 DeepSeek/MiMo 贵但比国际四巨头便宜（火山方舟按量、阿里云按量等） |
+| 6 | 贵按量付费 | Grok、Gemini、Claude、GPT 等国际四巨头按量付费 |
 
+> ⚠️ **每个定价档次内按具体价格相对排序**，贵的排后面。
 > ⚠️ **评审 Agent 内部也遵循此优先级**：每个 ReviewXXX 的 model 字段应放优先级最高的可用端点，fallback_models 按优先级递减排列。
 
-## ⚠️ 【最高优先级】修改代码必须评审（不可跳过）
+## Codex 与 OpenCode 双向评审调用（关键）
+
+### ReviewGPT 定位
+
+- ReviewGPT 使用 Codex ChatGPT Plan 的 `gpt-5.5`，但不是 OpenCode provider 或 OMO category。
+- 运行前必须先执行 `codex login status`。标准只读非交互命令为：
+  ```bash
+  codex exec -c 'approval_policy="never"' -m gpt-5.5 -s read-only \
+    --skip-git-repo-check -o review-gpt.txt "评审提示"
+  ```
+- 显示 `Not logged in` 时应报告“未登录/缺少认证”；只有运行日志明确返回 HTTP 401 才能报告 401，并须区分 `Missing bearer`、token 过期等具体原因。参数解析失败、超时和余额不足也必须分别准确报告。
+- 禁止复制或同步 `~/.codex/auth.json` token。ReviewGPT 不可用时按成本优先级逐个调用其它模型家族补票，不降低 M=2。
+- 主模型属于 GPT/OpenAI 家族时必须排除 ReviewGPT；GPT-5.4 与 GPT-5.5 不能作为两张独立票。
+
+### Hermes/Codex 调用 OpenCode
+
+- 判断 OpenCode 不存在前，必须依次检查 `command -v opencode`、`~/.opencode/bin/opencode` 和 `find /root -name opencode -type f -not -path '*/.git/*'`；PATH 中找不到命令不等于未安装。
+- 调用 OpenCode 非交互评审时，必须传入唯一临时 `--title`。结束后使用该次运行的精确 OpenCode session ID，把 `session.title` 改为 `评审任务-任务简称-Review角色-结果-时间`，并通过 `opencode db` SELECT 回读验证。
+- PASS、FAIL、待核实、超时、余额不足和其它调用失败都必须改名，禁止遗留会挤占交互会话列表的临时标题。
+- 不同 Review 角色若实际 fallback 到同一模型家族，只能合计一票；必须继续调用其它家族补足 M=2。
+
+## ⚠️ 【最高优先级】修改必须评审（不可跳过）
+
+### 代码修改评审
 
 - **任何代码修改前必须调用多模型评审，无例外**
 - **Git pre-commit hook 会硬阻断未评审的提交，没有后门**
@@ -76,8 +114,14 @@
 - **强制排除规则**：主模型是哪家的，**严禁**调用同家 ReviewXXX 评审——同一个模型写代码再自己评审自己，纯浪费 Token 且无交叉验证意义
 - 评审流程：改代码 → `task(category="ReviewXXX")` 调用不同模型评审 → M≥2 通过 → `mark-review-passed` → commit
 - **无论用户是否在当条消息中强调"禁止跳过评审"，都必须走评审流程**
-- 主模型是 MiMo 则用 ReviewGLM + ReviewKimi + ReviewDeepseek + ReviewQwen（排除 ReviewMimo）
-- 主模型是 DeepSeek 则用 ReviewGLM + ReviewKimi + ReviewQwen + ReviewMimo（排除 ReviewDeepseek）
+- 主模型是 MiMo 则优先用 ReviewGLM + ReviewKimi，缺票时按 ReviewMinimax → ReviewDeepseek → ReviewQwen 逐个补审（排除 ReviewMimo）
+- 主模型是 DeepSeek 则优先用 ReviewGLM + ReviewKimi，缺票时按 ReviewMinimax → ReviewMimo → ReviewQwen 逐个补审（排除 ReviewDeepseek）
+
+### 文档修改评审
+
+- **修改文档（AGENTS.md 等）也需多模型评审**，禁止跳过评审直接同步
+- 评审流程同代码：改文档 → `task(category="ReviewXXX")` 调用 2+ 不同模型评审 → 全通过 → 多端同步
+- **未评审的文档修改禁止同步到远程和多端**
 
 ## 文件编辑安全（关键）
 
@@ -123,9 +167,9 @@
 ## GitHub Copilot 全局规则
 
 - **Copilot 只保留免费模型**，不付费订阅 Copilot Pro/Pro+
-- **白名单只保留 Arena + Artificial Analysis 综合排名靠前的 2 个免费模型**（2026-05 验证）：
-  - `copilot.gpt-4.1`（Arena #95, AI Index 39）
+- **白名单只保留 Arena + Artificial Analysis 综合排名靠前的 2 个免费模型**（2026-06 验证）：
   - `copilot.claude-haiku-4-5`（Arena #101, AI Index 37）
+  - `copilot.gpt-5-mini`（Arena #65, AI Index 33）
 - **用途**：仅作为小 AGENT（sisyphus-junior）的 fallback 模型，不作为主模型或大 AGENT 模型
 - **定期验证**：每季度检查 Arena 和 Artificial Analysis 排名，如有更优免费模型则替换
 
@@ -150,6 +194,13 @@
 
 - **每次修改完代码后，必须进行严格的语法校验**（如运行 linter、类型检查、语法分析等），确保代码无语法错误、无类型错误、符合项目代码规范，不得提交或部署未通过语法校验的代码。
 - **推送代码前，必须确保所有单元测试通过**。如果有测试框架，任何会导致测试失败的改动都不应推送。
+
+## 免费端点变化每日检查（关键）
+
+- **涉及修改 Agent 工具配置的会话**，每天第一次对话时必须联网查询所有免费端点对强模型的支持变化
+- 免费端点包括但不限于：NVIDIA NIM、Cloudflare Workers AI、OpenRouter Free、OpenCode Zen Free、ModelScope、Modal、GitHub Copilot Free
+- 发现新强模型→评估是否加入 Agent fallback；发现模型下架/退休→同步清理所有配置
+- 此检查仅针对"修改 Agent 工具配置"的会话，普通编码会话无需执行
 
 ## 多端体验一致性（关键）
 
@@ -185,7 +236,7 @@
 
 - **任何代码修改都必经共识评审**（除纯查询/读取操作外）
 - **通过并行启动 N 个 category 评审任务实现多模型评审**——每个 category 绑定独立模型
-- **N 选 M 通过制 + 懒启动**：先并行 N 个（如 N=3），全部通过不启动更多；不达标再逐启动 N+1/N+2
+- **N 选 M 通过制 + 懒启动**：首批恰好并行 N=2 个不同模型家族，M=2；两者都 PASS 才停止，否则按成本优先级逐个启动后续 Review，达到 2 张有效 PASS 后立即停止
 - **流程**：排除主模型同家 Review → 并行启动 N 个 → M≥2 立即继续 → 不足则逐加 → 标记 → 同步推送
 - 评审 Agent **只有读权限**（不可 edit/bash），不会修改代码
 
@@ -200,7 +251,7 @@
   │
   ├── 第一步：确定当前主模型，排除对应的 Review category
   │   例如主模型是 volcengine-coding/glm-5.1 → 排除 ReviewGLM
-  │   从剩余 Review category 中选 3 个并行启动
+  │   从剩余 Review category 中按成本优先级选 2 个并行启动
   │
   ├── 第二步：Sisyphus 先启动前 N 个评审任务（默认 N=2）
   │   task(category="ReviewDeepseek", prompt="...", run_in_background=true)
@@ -252,32 +303,34 @@
 **评审必须使用和写代码的主模型不同的模型，禁止用同模型评审自己的代码。**
 
 选择逻辑：
-1. 当前主模型是哪家 → 排除对应的 Review category
-2. 从剩余 Review category 中选 3 个并行评审
+1. **优先选有免费或 Plan 端点的 Review**（ReviewGLM、ReviewKimi、ReviewDeepseek、ReviewMinimax）
+2. 只有前面不够时，才补纯按量付费的 Review；便宜的 ReviewMimo 必须早于 ReviewQwen
 3. 都不可用时，用 ReviewGrok 兜底
 
 | 主模型 | 排除 | 评审优先选择 |
 |---|---|---|
-| DeepSeek V4 Pro | ReviewDeepseek | ReviewGLM + ReviewKimi + ReviewQwen + ReviewMimo + ReviewMinimax |
-| GLM-5.1 | ReviewGLM | ReviewDeepseek + ReviewKimi + ReviewQwen + ReviewMimo + ReviewMinimax |
-| Kimi K2.6 | ReviewKimi | ReviewGLM + ReviewDeepseek + ReviewQwen + ReviewMimo + ReviewMinimax |
-| Qwen 3.7 Max | ReviewQwen | ReviewGLM + ReviewKimi + ReviewDeepseek + ReviewMimo + ReviewMinimax |
-| MiMo V2.5 Pro | ReviewMimo | ReviewGLM + ReviewKimi + ReviewDeepseek + ReviewQwen + ReviewMinimax |
-| MiniMax M3 | ReviewMinimax | ReviewGLM + ReviewKimi + ReviewDeepseek + ReviewQwen + ReviewMimo |
-| 其它模型 | 无 | ReviewGLM + ReviewKimi + ReviewDeepseek + ReviewQwen + ReviewMimo + ReviewMinimax |
+| DeepSeek V4 Pro | ReviewDeepseek | ReviewGLM + ReviewKimi + ReviewMinimax + ReviewMimo + ReviewQwen |
+| GLM-5.1 | ReviewGLM | ReviewKimi + ReviewMinimax + ReviewDeepseek + ReviewMimo + ReviewQwen |
+| Kimi K2.6 | ReviewKimi | ReviewGLM + ReviewMinimax + ReviewDeepseek + ReviewMimo + ReviewQwen |
+| Qwen 3.7 Max | ReviewQwen | ReviewGLM + ReviewKimi + ReviewMinimax + ReviewDeepseek + ReviewMimo |
+| MiMo V2.5 Pro | ReviewMimo | ReviewGLM + ReviewKimi + ReviewMinimax + ReviewDeepseek + ReviewQwen |
+| MiniMax M3 | ReviewMinimax | ReviewGLM + ReviewKimi + ReviewDeepseek + ReviewMimo + ReviewQwen |
+| 其它模型 | 无 | ReviewGLM + ReviewKimi + ReviewMinimax + ReviewDeepseek + ReviewMimo + ReviewQwen |
 
 > 任何 Review 不可用时，用 ReviewGrok（proxy_xai/grok-4.3）兜底补审。
+> 不同 Review 角色若实际 fallback 到同一模型家族，只能合计一票；必须继续调用其它家族补足 M=2。
 
 **禁止跳过评审直接修改代码。**
 
 ### 默认评审策略
 
 > **用户未明确指定评审参数时，自动采用以下默认策略：**
-> - **N=3**（并行启动 3 个 Review category）
-> - **M=2**（3 中至少 2 票通过即放行）
-> - 无需再次询问用户，直接并行启动评审
+> - **N=2**（首批恰好并行启动 2 个不同家族的 Review）
+> - **M=2**（首批两票都 PASS 才放行）
+> - 首批不足 2 张 PASS 时，按免费端点 → Plan → 便宜按量 → 中等按量 → 贵按量的顺序逐个补审；MiMo 按量必须早于 Qwen 按量
+> - 无需再次询问用户，直接执行懒启动评审
 >
-> ⚠️ **服务器资源限制**：当前生产服务器为 2核4G，3 个 Oracle 并行评审峰值额外内存消耗约 90-240MB。
+> ⚠️ **服务器资源限制**：当前生产服务器为 2核4G，首批只允许 2 个 Oracle 并行运行。
 
 ### 评审结果模型标注（强制）
 
@@ -445,15 +498,12 @@ pre-commit hook 检查流程:
 8. **GitHub 所有涉及 AI 调用的仓库**:
    - `Fatty911/Personal_commonly_used/ai_tools/opencode/`
    - `Fatty911/Personal_commonly_used/ai_tools/KiloCode/`
-   - `Fatty911/Personal_commonly_used/ai_tools/hermes-agent/`
    - `Fatty911/hermes-agent`
 9. **远程服务器 root@racknerd.jiucai.eu.org**:
    - `/root/.config/opencode/opencode.json`
    - `/root/.config/opencode/oh-my-openagent.json`
    - `/root/.local/share/opencode/auth.json`
    - `/root/.hermes/config.yaml`
-   - `/root/.hermes/profiles/me138/config.yaml`
-   - `/root/.hermes/profiles/me152/config.yaml`
    - `/root/.hermes/auth.json`
 10. **远程服务器 root@jstq.com.cn**:
     - `/root/.config/opencode/opencode.json`
@@ -469,25 +519,6 @@ pre-commit hook 检查流程:
 - 变体只保留最高思考程度
 - 免费优先，付费辅助
 - 各 Provider 按用户指定规则精简白名单
-
-## Hermes-Agent 配置自动同步到 GitHub（关键）
-
-- **每次修改 Hermes-Agent 配置**（三个 `config.yaml`、skills、scripts、systemd 服务文件等）**并验证正确后**，必须自动同步到 GitHub：
-  ```bash
-  git clone git@github.com:Fatty911/Personal_commonly_used.git /tmp/hermes-sync
-  cd /tmp/hermes-sync
-  # 复制以下文件：
-  #   /root/.hermes/config.yaml → ai_tools/hermes-agent/config.yaml
-  #   /root/.hermes/profiles/me138/config.yaml → ai_tools/hermes-agent/profiles/me138/config.yaml
-  #   /root/.hermes/profiles/me152/config.yaml → ai_tools/hermes-agent/profiles/me152/config.yaml
-  #   /root/.hermes/skills/ → ai_tools/hermes-agent/skills/
-  #   /root/.hermes/scripts/ → ai_tools/hermes-agent/scripts/
-  #   /root/.config/systemd/user/hermes-gateway-me*.service → ai_tools/hermes-agent/systemd/
-  git add ai_tools/hermes-agent/ && git commit -m "hermes-agent: 同步 racknerd 生产配置" && git push
-  ```
-- **禁止推送含真实 API key 的 .env 文件**；须用 `sed 's/=.*/=REDACTED/'` 去敏后再生成 `.env.example`
-- **同步时机**：每次改完配置 → 验证正确 → 立即执行上述流程 → 再发结论给用户
-- **已有案例**：2026-06-19 改了 `model.provider`、`terminal.backend` 等多项配置，只在 VPS 上生效，未同步到 GitHub 备份；且初版执行时只提取了 .git 目录导致删除了 89 个仓库文件（已 revert 恢复）
 
 ## ⚠️ plugin 字段跨端差异（关键）
 
@@ -546,10 +577,172 @@ OpenCode 和 Hermes-Agent 的自动升级脚本分开管理，互不影响：
 - **根因**：OpenCode 内部 SessionRetry 对 5xx/403 无限重试（指数退避），OMO fallback 永远等不到介入机会
 - **解决**：手动切换主模型；等 OpenCode 官方合并 maxAttempts 配置（GitHub issue #26675）
 - **状态**：未解决，OpenCode 已知缺陷
-// test review config - 06/02/2026 19:08:15
+
+## 2026-06-20 全端配置重整
+
+### 核心事件
+- **Hermes-Agent Gemini 404**：`model.default` 为 `openrouter/free`（自动路由），Google BYOK 欠费后 API 返回 404。切为 NIM `z-ai/glm-5.1`，全部 alias 切 NIM，删除所有 `openrouter/free` 自动路由。
+- **压缩模型优化**：Hermes-Agent compression 从 `nemotron-3-super`→`nvidia-dsv4-pro` + 5 层 fallback；KiloCode 不支持 fallback，保留 `grok-4.20`。
+- **同系列替换**：执行 `nemotron-3-super→ultra`、`minimax-m2.7→m3` 跨所有工具。
+- **免费端点扫描**：NIM 新增 `minimax-m3`(1M)、CF 新增 `glm-5.2`(262K)，已加入全 Agent fallback。
+- **七牛云 AI**：Provider 已配（5 强模型），`disabled_providers` 中——暂不启用。
+- **Modal 免费期结束**：Modal 官方 GLM-5.1 免费端点于 2026-04-30 截止，已禁用（保留 provider 配置）。大 Agent 主模型切 `nvidia-glm-5.1`。
+- **qwen3-coder:free 移除**：AI Index 18-25 低于列表中其他模型，不满足质量门。
+- **ModelScope 改名**：`modelscope-GLM5`→`modelscope`，删 GLM-5 只保留 MiniMax-M3（避免挤占每日配额）。
+
+### OMO Agent Fallback 最终状态（统一优先级：免费端按上下文 200K→256K→262K→1M，再 Plan→按量→[大]grok）
+| Agent 类型 | 模型数 | 来源 | 主模型 |
+|---|---|---|---|
+| 大 Agent ×7 | 18 | NIM→CF→OR→Zen→MS→Plan→按量→grok | nvidia/glm-5.1 |
+| ultrabrain | 16 | k2.6 族优先，无 GLM-5/5.1 | nvidia/kimi-k2.6 |
+| 小 Agent ×3 | 20 | copilot 弱模型在最前 | copilot/claude-haiku-4-5 |
+
+### Hermes-Agent
+- model.default: `openrouter/free`→`z-ai/glm-5.1`
+- model.fallback: NIM(k2.6→dsv4→ultra→minimax-m3)→OR(k2.6)→Plan→按量→grok
+- compression: `nvidia-dsv4-pro`+ds官方→vc-dsv4→vc-glm→mimo→grok
+- 删除: `summary_model` 遗留键、`openrouter/free` 全部引用、qwen3-coder:free
+
+### KiloCode
+- proxy_openrouter whitelist: 2026-06-21 删除已下架的 kimi-k2.6:free；只保留仍由官方 API 列出的免费模型
+- NIM whitelist: super→ultra+minimax-m3
+
+### 模型上下文（联网核实）
+| 模型 | 上下文 | 备注 |
+|---|---|---|
+| kimi-k2.6/k2.7-code | 256K | Kimi 官方 |
+| GLM-5.1 | 200K | Z.AI 官方 |
+| GLM-5.2(vc/七牛) | 1M | Z.AI 官方；CF 临时 262K |
+| DeepSeek V4 Pro/Flash | 1M | 官方/HF/NIM |
+| Nemotron 3 Ultra | 1M（最大） | NIM 文档 |
+| Nemotron 3 Super | 256K 默认/1M 最大 | 已替换为 ultra |
+| MiniMax M3 | 1M | MiniMax 官方/NIM/ModelScope 免费 |
+| Qwen 3.7 Max | 1M | 阿里云官方 |
+
+### 全端同步 ✅
+C: | D: | racknerd | jstq | dmit | GitHub | E:\Codes×12 全部同步
+
+### 新增 Provider：七牛云 AI
+- baseURL: `https://api.qnaigc.com/v1`
+- 白名单：`glm-5.2`, `kimi-k2.7-code`, `deepseek-v4-pro`, `minimax-m3`, `qwen3.7-max`
+- 未开 key → 在 `disabled_providers` 中
+
+### 已知 Bug 与解决方案（新增）
+
+### 7. OpenCode models.json 缓存导致配置不生效
+- **现象**：SCP 推送新配置后 `/models` TUI 仍显示旧 Provider、模型上下文仍为旧值
+- **根因**：OpenCode 将模型定义缓存在 `~/.cache/opencode/models.json`（2.3MB），改 config 不触发缓存重建
+- **解决**：改完配置推送后**必须删除远程服务器上的 models.json 缓存**：`rm -f /root/.cache/opencode/models.json`，下次启动自动重建
+- **注意**：Windows 端同理，位于 `C:\Users\<user>\.cache\opencode\models.json`
+- **已识别**：2026-06-20
+
+### 8. auth.json 有 key 但未登记的 Provider 仍会在 TUI 显示
+- **现象**：`disabled_providers` 和 `provider` 都没有的 provider，但 auth.json 有 key，TUI 仍显示
+- **根因**：OpenCode 自动扫描 auth.json，有 key 的 provider 就会出现在模型列表。**且 `disabled_providers` 只对 `provider` 块中存在的 provider 生效——不在 provider 里的 disabled 项被静默忽略**
+- **解决**：
+  1. auth.json 中有 key 但不用的 provider 必须**同时**加到 `provider`（空 whitelist）和 `disabled_providers`
+  2. 只加 `disabled_providers` 不加 `provider` = 无效，OpenCode 仍显示
+- **已识别**：2026-06-20，涉及 provider：`qianfan`、`minimax-cn-coding-plan`、`xr_zhipu`、`qwen`
+
+### 9. Copilot 模型退役未同步清理
+- **现象**：`copilot.gpt-4.1` 已于 2026-06-01 退役，但仍在白名单中
+- **解决**：保留 Copilot 免费最强 2 个模型（`claude-haiku-4-5`、`gpt-5-mini`），删退役模型
+- **定期检查**：每季度复查 Copilot Free 模型变化
+- **已修复**：2026-06-20
+
+### 10. NIM 429 导致错误归因
+- **现象**：NIM API 返回 429 后 fallback 到 kimi-k2.6（256K），提示上下文超限，误以为是 v4-pro 的问题
+- **根因**：OpenCode SessionRetry 对 429 无限重试耗尽 fallback 次数，实际调用的是 k2.6 而非 v4-pro
+- **排查方法**：先查缓存中的模型上下文 `python3 -c "import json; c=json.load(open('models.json')); ..."` 确认配置无误，再查 fallback 链确认实际调用模型
+- **已识别**：2026-06-20
 
 ## Provider 白名单强制规则
 
 - **开启 Provider 必须配白名单**：有 auth.json key 的 Provider 必须设 whitelist，不设会导致 TUI 显示全部模型
 - **模型 ID 必须查官网确认**：改 models/whitelist 前必须联网查 Provider 官方文档确认模型名称、ID、参数
 - **不设白名单的 Provider 要禁用**：避免 provider: auto 时匹配到不该用的端点
+- **`disabled_providers` 只对 `provider` 块中存在的 provider 生效**：auth.json 有 key 但 provider 块里没有的 provider，OpenCode 仍会显示——必须同时加入 `provider`（空 whitelist）和 `disabled_providers` 才能完全隐藏
+- **proxy_* 端点策略**：OpenRouter、xAI、Google 等共用 API key 的 provider，native 端点禁用（加 provider 空 whitelist + disabled），只启用 proxy_ 版本
+- **内置 Provider 也需手动禁用**：OpenCode 自带 google、groq 等内置 provider 定义，即使 auth.json 无 key 也会在 TUI 显示——同样需要加到 provider（空 whitelist）+ disabled_providers
+
+## 本次会话完整改动（2026-06-20）
+
+### 核心事件
+- **Hermes-Agent YAML 静默降级**：`target_ratio` 和 `fallback_providers` 缩进错误导致 YAML 解析失败，所有自定义配置被忽略、fallback 到默认。修复后创建 `validate-all-configs.py` 自动校验。
+- **TUI `/models` 显示多余 Provider 根因**：3 层问题——① Ghost（disabled 含不存在的 provider）、② auth.json 有 key 但未在 provider 块登记（`disabled_providers` 对此无效）、③ OpenCode 缓存 `models.json` 未清理。
+- **OpenRouter/xAI 代理策略**：native `openrouter`/`xai` + provider 空 whitelist → disabled，启用 `proxy_openrouter`/`proxy_xai`。
+- **定价档次重新定义**：按量付费拆为三档——便宜（DeepSeek/MiMo 官方）、中等（国产模型，比 DS/MiMo 贵比四巨头便宜）、贵（Grok/Gemini/Claude/GPT）。每档内按具体价格排序。
+- **Sisyphus 上下文策略调整**：TUI 默认入口需最长上下文，主模型 `nvidia-deepseek-v4-pro`（NIM 免费/1M），fallback 仅保留 1M 以上模型，移除 nemotron-3-ultra（能力不足）、kimi 系列（262K）、GLM-5.1（200K）、CF/Zen 免费（< 1M）。
+- **Ultrabrain Kimi 策略验证并取消**：联网查 Artificial Analysis + Arena 排名，Kimi K2.6 对 v4-pro/GLM-5.1 无显著优势（Intelligence Index 54 vs 52/51，GDPval-AA 被 v4-pro 反超，Code Arena 被 GLM-5.1 碾压），历史优先规则已过时。Ultrabrain 统一到 glm-5.1。
+- **小 Agent fallback 链扩展**：copilot 弱模型 + 大 Agent 全链，确保 fallback 最深。
+
+### 模型排名验证（联网，2026-06-20）
+| 基准 | Kimi K2.6 | DeepSeek V4 Pro | GLM-5.1 |
+|---|---|---|---|
+| AA Intelligence Index | 54 (#1 开源) | 52 (#2) | 51 (#3) |
+| GDPval-AA (agentic) | 1484 | 1554 (#1 开源) | 1535 |
+| Arena Code Arena | #7 (1522) | #17 (1459) | #6 (1531) |
+| Arena Text Arena | #11 | #14 | #9 |
+| 上下文 | 262K | 1M | 200K |
+
+### OMO Agent Fallback 最终状态
+| Agent 类型 | 主模型 | Fallback 链 | 链长 |
+|---|---|---|---|
+| **Sisyphus**（编排总管，TUI 默认） | nvidia-deepseek-v4-pro | 1M-only：NIM→MS→Plan→便宜→中等→贵→grok | 9 |
+| **大 Agent ×7**（oracle/deep/ultrabrain/visual/high/artistry/writing） | nvidia-glm-5.1 | CF→OR→NIM kimi→CF glm→Zen→NIM 1M→Zen mimo→NIM v4→MS→NIM m3→Plan→便宜→中等→grok | 17 |
+| **小 Agent ×3**（junior/quick/unspecified-low） | copilot-claude-haiku-4-5 | copilot + 大链 | 18 |
+| **Review ×7**（GLM/Deepseek/Kimi/Qwen/Minimax/Mimo/Grok） | 各家独立 | 短链（评审 prompt 短） | 0-2 |
+
+### 定价档次（新增全局规则）
+| 档次 | 定价级别 | 示例 |
+|---|---|---|
+| 4 | 便宜按量付费 | DeepSeek 官方、MiMo 官方 |
+| 5 | 中等按量付费 | 国产比 DS/MiMo 贵比四巨头便宜（火山按量、阿里云按量等） |
+| 6 | 贵按量付费 | Grok、Gemini、Claude、GPT 官方 |
+
+### 模型上下文（联网核实）
+| 模型 | 上下文 | 备注 |
+|---|---|---|
+| DeepSeek V4 Pro/Flash | 1M | 官方/HF/NIM |
+| GLM-5.2 (vc/七牛) | 1M | Z.AI 官方；CF 临时 262K |
+| GLM-5.1 | 200K | Z.AI 官方/NIM |
+| Kimi K2.6/K2.7-code | 256K | Kimi 官方 |
+| Nemotron 3 Ultra | 1M（最大） | NIM 文档 |
+| MiniMax M3 | 1M | MiniMax 官方/NIM/ModelScope |
+| Qwen 3.7 Max | 1M | 阿里云官方 |
+
+### 全端同步 ✅
+C: | D: | racknerd | jstq | dmit | GitHub | E:\Codes×12 全部同步
+C: | D: | racknerd | jstq | dmit | GitHub | E:\Codes×12
+
+## 项目特有规则（保留）
+
+## ⚠️ 【最高优先级】修改代码必须评审（不可跳过）
+
+- **任何代码修改前必须调用多模型评审，无例外**
+- **Git pre-commit hook 会硬阻断未评审的提交，没有后门**
+- **禁止 `SKIP_REVIEW=1` 或 `ALLOW_UNREVIEWED_EDIT=1` 绕过评审**
+- **强制排除规则**：主模型是哪家的，**严禁**调用同家 ReviewXXX 评审——同一个模型写代码再自己评审自己，纯浪费 Token 且无交叉验证意义
+- 评审流程：改代码 → `task(category="ReviewXXX")` 调用不同模型评审 → M≥2 通过 → `mark-review-passed` → commit
+- **无论用户是否在当条消息中强调"禁止跳过评审"，都必须走评审流程**
+- 主模型是 MiMo 则用 ReviewGLM + ReviewKimi + ReviewDeepseek + ReviewQwen（排除 ReviewMimo）
+- 主模型是 DeepSeek 则用 ReviewGLM + ReviewKimi + ReviewQwen + ReviewMimo（排除 ReviewDeepseek）
+
+## Hermes-Agent 配置自动同步到 GitHub（关键）
+
+- **每次修改 Hermes-Agent 配置**（三个 `config.yaml`、skills、scripts、systemd 服务文件等）**并验证正确后**，必须自动同步到 GitHub：
+  ```bash
+  git clone git@github.com:Fatty911/Personal_commonly_used.git /tmp/hermes-sync
+  cd /tmp/hermes-sync
+  # 复制以下文件：
+  #   /root/.hermes/config.yaml → ai_tools/hermes-agent/config.yaml
+  #   /root/.hermes/profiles/me138/config.yaml → ai_tools/hermes-agent/profiles/me138/config.yaml
+  #   /root/.hermes/profiles/me152/config.yaml → ai_tools/hermes-agent/profiles/me152/config.yaml
+  #   /root/.hermes/skills/ → ai_tools/hermes-agent/skills/
+  #   /root/.hermes/scripts/ → ai_tools/hermes-agent/scripts/
+  #   /root/.config/systemd/user/hermes-gateway-me*.service → ai_tools/hermes-agent/systemd/
+  git add ai_tools/hermes-agent/ && git commit -m "hermes-agent: 同步 racknerd 生产配置" && git push
+  ```
+- **禁止推送含真实 API key 的 .env 文件**；须用 `sed 's/=.*/=REDACTED/'` 去敏后再生成 `.env.example`
+- **同步时机**：每次改完配置 → 验证正确 → 立即执行上述流程 → 再发结论给用户
+- **已有案例**：2026-06-19 改了 `model.provider`、`terminal.backend` 等多项配置，只在 VPS 上生效，未同步到 GitHub 备份；且初版执行时只提取了 .git 目录导致删除了 89 个仓库文件（已 revert 恢复）
