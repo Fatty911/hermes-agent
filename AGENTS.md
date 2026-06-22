@@ -1,555 +1,619 @@
-# 全局规则
+# Hermes Agent - Development Guide
 
-## 配置修改必须验证（关键）
+Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
-- **改任何软件配置后必须验证是否正确**，包括但不限于：OpenCode+OMO、Hermes-Agent、KiloCode、系统 cron、Git hooks 等
-- **验证方法**：改完配置后立即执行相关命令确认无报错（如 `opencode --version`、`python3 -c "import json; json.load(open('config.json'))"`、`crontab -l` 等）
-- **禁止**：改完配置直接同步推送而不验证，导致线上环境配置损坏
-- **已有案例**：误删 `output` 字段导致 OpenCode 无法启动、cron 升级脚本 CRLF 换行符导致执行失败、plugin 字段重复导致 OMO 被禁用
-- **已有案例**：`disabled_providers` 含不存在的 provider 名导致 OpenCode 计数错乱、本应禁用的 Provider 又显示出来
+## Development Environment
 
-## 禁止操作（关键）
+```bash
+source venv/bin/activate  # ALWAYS activate before running Python
+```
 
-- **禁止添加用户未明确要求的新模型**：不自行判断"某个模型可能可用"就往 provider 白名单里加，必须等用户明确确认
-- **禁止模型残留**：将某模型替换为同系列新版本时，必须从同一 provider 的白名单中**删除旧模型**。如 `glm-5.1 → glm-latest`、`qwen3.6-plus → qwen3.7-max`，不能新旧并存
-- **禁止未联网查证**：修改模型配置前必须联网查询官方文档确认模型是否真实可用，严禁凭记忆或猜测添加模型
-- **已有案例**：`kimi-k2.7-code` 未经验证加入 volcengine 白名单导致 Coding Plan 报不兼容、`glm-5.1` 和 `glm-latest` 共存违反替换规则
+## Project Structure
 
-## Provider 白名单一致性校验（同步前强制）
+```
+hermes-agent/
+├── run_agent.py          # AIAgent class — core conversation loop
+├── model_tools.py        # Tool orchestration, discover_builtin_tools(), handle_function_call()
+├── toolsets.py           # Toolset definitions, _HERMES_CORE_TOOLS list
+├── cli.py                # HermesCLI class — interactive CLI orchestrator
+├── hermes_state.py       # SessionDB — SQLite session store (FTS5 search)
+├── agent/                # Agent internals
+│   ├── prompt_builder.py     # System prompt assembly
+│   ├── context_compressor.py # Auto context compression
+│   ├── prompt_caching.py     # Anthropic prompt caching
+│   ├── auxiliary_client.py   # Auxiliary LLM client (vision, summarization)
+│   ├── model_metadata.py     # Model context lengths, token estimation
+│   ├── models_dev.py         # models.dev registry integration (provider-aware context)
+│   ├── display.py            # KawaiiSpinner, tool preview formatting
+│   ├── skill_commands.py     # Skill slash commands (shared CLI/gateway)
+│   └── trajectory.py         # Trajectory saving helpers
+├── hermes_cli/           # CLI subcommands and setup
+│   ├── main.py           # Entry point — all `hermes` subcommands
+│   ├── config.py         # DEFAULT_CONFIG, OPTIONAL_ENV_VARS, migration
+│   ├── commands.py       # Slash command definitions + SlashCommandCompleter
+│   ├── callbacks.py      # Terminal callbacks (clarify, sudo, approval)
+│   ├── setup.py          # Interactive setup wizard
+│   ├── skin_engine.py    # Skin/theme engine — CLI visual customization
+│   ├── skills_config.py  # `hermes skills` — enable/disable skills per platform
+│   ├── tools_config.py   # `hermes tools` — enable/disable tools per platform
+│   ├── skills_hub.py     # `/skills` slash command (search, browse, install)
+│   ├── models.py         # Model catalog, provider model lists
+│   ├── model_switch.py   # Shared /model switch pipeline (CLI + gateway)
+│   └── auth.py           # Provider credential resolution
+├── tools/                # Tool implementations (one file per tool)
+│   ├── registry.py       # Central tool registry (schemas, handlers, dispatch)
+│   ├── approval.py       # Dangerous command detection
+│   ├── terminal_tool.py  # Terminal orchestration
+│   ├── process_registry.py # Background process management
+│   ├── file_tools.py     # File read/write/search/patch
+│   ├── web_tools.py      # Web search/extract (Parallel + Firecrawl)
+│   ├── browser_tool.py   # Browserbase browser automation
+│   ├── code_execution_tool.py # execute_code sandbox
+│   ├── delegate_tool.py  # Subagent delegation
+│   ├── mcp_tool.py       # MCP client (~1050 lines)
+│   └── environments/     # Terminal backends (local, docker, ssh, modal, daytona, singularity)
+├── gateway/              # Messaging platform gateway
+│   ├── run.py            # Main loop, slash commands, message dispatch
+│   ├── session.py        # SessionStore — conversation persistence
+│   └── platforms/        # Adapters: telegram, discord, slack, whatsapp, homeassistant, signal, qqbot
+├── ui-tui/               # Ink (React) terminal UI — `hermes --tui`
+│   ├── src/entry.tsx        # TTY gate + render()
+│   ├── src/app.tsx          # Main state machine and UI
+│   ├── src/gatewayClient.ts # Child process + JSON-RPC bridge
+│   ├── src/app/             # Decomposed app logic (event handler, slash handler, stores, hooks)
+│   ├── src/components/      # Ink components (branding, markdown, prompts, pickers, etc.)
+│   ├── src/hooks/           # useCompletion, useInputHistory, useQueue, useVirtualHistory
+│   └── src/lib/             # Pure helpers (history, osc52, text, rpc, messages)
+├── tui_gateway/          # Python JSON-RPC backend for the TUI
+│   ├── entry.py             # stdio entrypoint
+│   ├── server.py            # RPC handlers and session logic
+│   ├── render.py            # Optional rich/ANSI bridge
+│   └── slash_worker.py      # Persistent HermesCLI subprocess for slash commands
+├── acp_adapter/          # ACP server (VS Code / Zed / JetBrains integration)
+├── cron/                 # Scheduler (jobs.py, scheduler.py)
+├── environments/         # RL training environments (Atropos)
+├── tests/                # Pytest suite (~3000 tests)
+└── batch_runner.py       # Parallel batch processing
+```
 
-- **每次改完 provider 配置后同步前**，必须运行以下校验确认无 ghost provider：
-  ```python
-  disabled = set(config["disabled_providers"])
-  valid = set(config["provider"].keys())
-  ghost = disabled - valid  # disabled 中有但 provider 中不存在的
-  if ghost: 立即清理，禁止带着 ghost 同步
-  ```
-- **禁止**：`disabled_providers` 含不存在的 provider 名
+**User config:** `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys)
 
-## 修改范围纪律（关键）
+## File Dependency Chain
 
-- **只修改用户明确要求修改的内容。其他一律不动。**
-- 禁止"改进"、"重构"、"清理"、"优化"或"修复"用户未提及的内容——无论问题看起来多明显。
-- 禁止悄悄修复范围外的内容——发现真正问题先问。
-- **治标更要治本**：修复 bug 时追根因，不是给症状打补丁。修完要问"同类问题还会不会在别处发生？"
-- 禁止触碰相邻代码、附近函数、相关文件或导入，除非用户请求直接需要
+```
+tools/registry.py  (no deps — imported by all tool files)
+       ↑
+tools/*.py  (each calls registry.register() at import time)
+       ↑
+model_tools.py  (imports tools/registry + triggers tool discovery)
+       ↑
+run_agent.py, cli.py, batch_runner.py, environments/
+```
 
-## 发现错误自动修复流程（关键）
+---
 
-- **发现问题别问用户**：调用不同 Review AGENT 分析错误原因
-- **综合分析评审结果确定根因后自动修复**
-- **修复完再用不同 Review AGENT 验证是否符合预期**
-- **只有多种不同模型都判断错误原因不明确时才问用户**
+## AIAgent Class (run_agent.py)
 
-## 网页 JS 无法渲染时的模型验证（关键）
+```python
+class AIAgent:
+    def __init__(self,
+        model: str = "anthropic/claude-opus-4.6",
+        max_iterations: int = 90,
+        enabled_toolsets: list = None,
+        disabled_toolsets: list = None,
+        quiet_mode: bool = False,
+        save_trajectories: bool = False,
+        platform: str = None,           # "cli", "telegram", etc.
+        session_id: str = None,
+        skip_context_files: bool = False,
+        skip_memory: bool = False,
+        # ... plus provider, api_mode, callbacks, routing params
+    ): ...
 
-- **优先使用 API 文档**：用 `context7_query-docs` 或 `webfetch` 查官方 API 参考（如 `https://api-docs.deepseek.com`）
-- **搜索引擎找文本版**：用搜索引擎搜 `provider名 + supported models + coding plan` 找纯文本说明页面
-- **实在找不到 → 必须问用户确认**：严禁自行添加未经验证的模型
+    def chat(self, message: str) -> str:
+        """Simple interface — returns final response string."""
 
-## 模型配置原则
+    def run_conversation(self, user_message: str, system_message: str = None,
+                         conversation_history: list = None, task_id: str = None) -> dict:
+        """Full interface — returns dict with final_response + messages."""
+```
 
-- **思考程度变体只保留最高思考程度**（如 DeepSeek 的 `reasoningEffort: max`，不保留 low/medium）
-- **其它限制性越少越好**：能不配置 `input` 就不配（OpenCode 自动从 API 读取），`output` 如果 OpenCode 要求必须配则配
-- **免费端点优先**：所有 fallback 链中，免费端点（NIM、OpenRouter free、Cloudflare、Modal、ModelScope）排在付费端点前面
-- **弱模型不进评审链**：新增模型时，如果其在 Arena 或 Artificial Analysis 排行榜上排名低于当前已有模型列表中排名最低的模型，则不添加（排行榜随时间变化，不设固定门槛）
+### Agent Loop
 
-## Provider 优先级规则
+The core loop is inside `run_conversation()` — entirely synchronous:
 
-所有 Agent 工具的 fallback 链都应遵循以下优先级顺序：
+```python
+while api_call_count < self.max_iterations and self.iteration_budget.remaining > 0:
+    response = client.chat.completions.create(model=model, messages=messages, tools=tool_schemas)
+    if response.tool_calls:
+        for tool_call in response.tool_calls:
+            result = handle_function_call(tool_call.name, tool_call.args, task_id)
+            messages.append(tool_result_message(result))
+        api_call_count += 1
+    else:
+        return response.content
+```
 
-| 优先级 | 类型 | 示例 |
+Messages follow OpenAI format: `{"role": "system/user/assistant/tool", ...}`. Reasoning content is stored in `assistant_msg["reasoning"]`.
+
+---
+
+## CLI Architecture (cli.py)
+
+- **Rich** for banner/panels, **prompt_toolkit** for input with autocomplete
+- **KawaiiSpinner** (`agent/display.py`) — animated faces during API calls, `┊` activity feed for tool results
+- `load_cli_config()` in cli.py merges hardcoded defaults + user config YAML
+- **Skin engine** (`hermes_cli/skin_engine.py`) — data-driven CLI theming; initialized from `display.skin` config key at startup; skins customize banner colors, spinner faces/verbs/wings, tool prefix, response box, branding text
+- `process_command()` is a method on `HermesCLI` — dispatches on canonical command name resolved via `resolve_command()` from the central registry
+- Skill slash commands: `agent/skill_commands.py` scans `~/.hermes/skills/`, injects as **user message** (not system prompt) to preserve prompt caching
+
+### Slash Command Registry (`hermes_cli/commands.py`)
+
+All slash commands are defined in a central `COMMAND_REGISTRY` list of `CommandDef` objects. Every downstream consumer derives from this registry automatically:
+
+- **CLI** — `process_command()` resolves aliases via `resolve_command()`, dispatches on canonical name
+- **Gateway** — `GATEWAY_KNOWN_COMMANDS` frozenset for hook emission, `resolve_command()` for dispatch
+- **Gateway help** — `gateway_help_lines()` generates `/help` output
+- **Telegram** — `telegram_bot_commands()` generates the BotCommand menu
+- **Slack** — `slack_subcommand_map()` generates `/hermes` subcommand routing
+- **Autocomplete** — `COMMANDS` flat dict feeds `SlashCommandCompleter`
+- **CLI help** — `COMMANDS_BY_CATEGORY` dict feeds `show_help()`
+
+### Adding a Slash Command
+
+1. Add a `CommandDef` entry to `COMMAND_REGISTRY` in `hermes_cli/commands.py`:
+```python
+CommandDef("mycommand", "Description of what it does", "Session",
+           aliases=("mc",), args_hint="[arg]"),
+```
+2. Add handler in `HermesCLI.process_command()` in `cli.py`:
+```python
+elif canonical == "mycommand":
+    self._handle_mycommand(cmd_original)
+```
+3. If the command is available in the gateway, add a handler in `gateway/run.py`:
+```python
+if canonical == "mycommand":
+    return await self._handle_mycommand(event)
+```
+4. For persistent settings, use `save_config_value()` in `cli.py`
+
+**CommandDef fields:**
+- `name` — canonical name without slash (e.g. `"background"`)
+- `description` — human-readable description
+- `category` — one of `"Session"`, `"Configuration"`, `"Tools & Skills"`, `"Info"`, `"Exit"`
+- `aliases` — tuple of alternative names (e.g. `("bg",)`)
+- `args_hint` — argument placeholder shown in help (e.g. `"<prompt>"`, `"[name]"`)
+- `cli_only` — only available in the interactive CLI
+- `gateway_only` — only available in messaging platforms
+- `gateway_config_gate` — config dotpath (e.g. `"display.tool_progress_command"`); when set on a `cli_only` command, the command becomes available in the gateway if the config value is truthy. `GATEWAY_KNOWN_COMMANDS` always includes config-gated commands so the gateway can dispatch them; help/menus only show them when the gate is open.
+
+**Adding an alias** requires only adding it to the `aliases` tuple on the existing `CommandDef`. No other file changes needed — dispatch, help text, Telegram menu, Slack mapping, and autocomplete all update automatically.
+
+---
+
+## TUI Architecture (ui-tui + tui_gateway)
+
+The TUI is a full replacement for the classic (prompt_toolkit) CLI, activated via `hermes --tui` or `HERMES_TUI=1`.
+
+### Process Model
+
+```
+hermes --tui
+  └─ Node (Ink)  ──stdio JSON-RPC──  Python (tui_gateway)
+       │                                  └─ AIAgent + tools + sessions
+       └─ renders transcript, composer, prompts, activity
+```
+
+TypeScript owns the screen. Python owns sessions, tools, model calls, and slash command logic.
+
+### Transport
+
+Newline-delimited JSON-RPC over stdio. Requests from Ink, events from Python. See `tui_gateway/server.py` for the full method/event catalog.
+
+### Key Surfaces
+
+| Surface | Ink component | Gateway method |
+|---------|---------------|----------------|
+| Chat streaming | `app.tsx` + `messageLine.tsx` | `prompt.submit` → `message.delta/complete` |
+| Tool activity | `thinking.tsx` | `tool.start/progress/complete` |
+| Approvals | `prompts.tsx` | `approval.respond` ← `approval.request` |
+| Clarify/sudo/secret | `prompts.tsx`, `maskedPrompt.tsx` | `clarify/sudo/secret.respond` |
+| Session picker | `sessionPicker.tsx` | `session.list/resume` |
+| Slash commands | Local handler + fallthrough | `slash.exec` → `_SlashWorker`, `command.dispatch` |
+| Completions | `useCompletion` hook | `complete.slash`, `complete.path` |
+| Theming | `theme.ts` + `branding.tsx` | `gateway.ready` with skin data |
+
+### Slash Command Flow
+
+1. Built-in client commands (`/help`, `/quit`, `/clear`, `/resume`, `/copy`, `/paste`, etc.) handled locally in `app.tsx`
+2. Everything else → `slash.exec` (runs in persistent `_SlashWorker` subprocess) → `command.dispatch` fallback
+
+### Dev Commands
+
+```bash
+cd ui-tui
+npm install       # first time
+npm run dev       # watch mode (rebuilds hermes-ink + tsx --watch)
+npm start         # production
+npm run build     # full build (hermes-ink + tsc)
+npm run type-check # typecheck only (tsc --noEmit)
+npm run lint      # eslint
+npm run fmt       # prettier
+npm test          # vitest
+```
+
+---
+
+## Adding New Tools
+
+Requires changes in **2 files**:
+
+**1. Create `tools/your_tool.py`:**
+```python
+import json, os
+from tools.registry import registry
+
+def check_requirements() -> bool:
+    return bool(os.getenv("EXAMPLE_API_KEY"))
+
+def example_tool(param: str, task_id: str = None) -> str:
+    return json.dumps({"success": True, "data": "..."})
+
+registry.register(
+    name="example_tool",
+    toolset="example",
+    schema={"name": "example_tool", "description": "...", "parameters": {...}},
+    handler=lambda args, **kw: example_tool(param=args.get("param", ""), task_id=kw.get("task_id")),
+    check_fn=check_requirements,
+    requires_env=["EXAMPLE_API_KEY"],
+)
+```
+
+**2. Add to `toolsets.py`** — either `_HERMES_CORE_TOOLS` (all platforms) or a new toolset.
+
+Auto-discovery: any `tools/*.py` file with a top-level `registry.register()` call is imported automatically — no manual import list to maintain.
+
+The registry handles schema collection, dispatch, availability checking, and error wrapping. All handlers MUST return a JSON string.
+
+**Path references in tool schemas**: If the schema description mentions file paths (e.g. default output directories), use `display_hermes_home()` to make them profile-aware. The schema is generated at import time, which is after `_apply_profile_override()` sets `HERMES_HOME`.
+
+**State files**: If a tool stores persistent state (caches, logs, checkpoints), use `get_hermes_home()` for the base directory — never `Path.home() / ".hermes"`. This ensures each profile gets its own state.
+
+**Agent-level tools** (todo, memory): intercepted by `run_agent.py` before `handle_function_call()`. See `todo_tool.py` for the pattern.
+
+---
+
+## Adding Configuration
+
+### config.yaml options:
+1. Add to `DEFAULT_CONFIG` in `hermes_cli/config.py`
+2. Bump `_config_version` (currently 5) to trigger migration for existing users
+
+### .env variables:
+1. Add to `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` with metadata:
+```python
+"NEW_API_KEY": {
+    "description": "What it's for",
+    "prompt": "Display name",
+    "url": "https://...",
+    "password": True,
+    "category": "tool",  # provider, tool, messaging, setting
+},
+```
+
+### Config loaders (two separate systems):
+
+| Loader | Used by | Location |
+|--------|---------|----------|
+| `load_cli_config()` | CLI mode | `cli.py` |
+| `load_config()` | `hermes tools`, `hermes setup` | `hermes_cli/config.py` |
+| Direct YAML load | Gateway | `gateway/run.py` |
+
+---
+
+## Skin/Theme System
+
+The skin engine (`hermes_cli/skin_engine.py`) provides data-driven CLI visual customization. Skins are **pure data** — no code changes needed to add a new skin.
+
+### Architecture
+
+```
+hermes_cli/skin_engine.py    # SkinConfig dataclass, built-in skins, YAML loader
+~/.hermes/skins/*.yaml       # User-installed custom skins (drop-in)
+```
+
+- `init_skin_from_config()` — called at CLI startup, reads `display.skin` from config
+- `get_active_skin()` — returns cached `SkinConfig` for the current skin
+- `set_active_skin(name)` — switches skin at runtime (used by `/skin` command)
+- `load_skin(name)` — loads from user skins first, then built-ins, then falls back to default
+- Missing skin values inherit from the `default` skin automatically
+
+### What skins customize
+
+| Element | Skin Key | Used By |
+|---------|----------|---------|
+| Banner panel border | `colors.banner_border` | `banner.py` |
+| Banner panel title | `colors.banner_title` | `banner.py` |
+| Banner section headers | `colors.banner_accent` | `banner.py` |
+| Banner dim text | `colors.banner_dim` | `banner.py` |
+| Banner body text | `colors.banner_text` | `banner.py` |
+| Response box border | `colors.response_border` | `cli.py` |
+| Spinner faces (waiting) | `spinner.waiting_faces` | `display.py` |
+| Spinner faces (thinking) | `spinner.thinking_faces` | `display.py` |
+| Spinner verbs | `spinner.thinking_verbs` | `display.py` |
+| Spinner wings (optional) | `spinner.wings` | `display.py` |
+| Tool output prefix | `tool_prefix` | `display.py` |
+| Per-tool emojis | `tool_emojis` | `display.py` → `get_tool_emoji()` |
+| Agent name | `branding.agent_name` | `banner.py`, `cli.py` |
+| Welcome message | `branding.welcome` | `cli.py` |
+| Response box label | `branding.response_label` | `cli.py` |
+| Prompt symbol | `branding.prompt_symbol` | `cli.py` |
+
+### Built-in skins
+
+- `default` — Classic Hermes gold/kawaii (the current look)
+- `ares` — Crimson/bronze war-god theme with custom spinner wings
+- `mono` — Clean grayscale monochrome
+- `slate` — Cool blue developer-focused theme
+
+### Adding a built-in skin
+
+Add to `_BUILTIN_SKINS` dict in `hermes_cli/skin_engine.py`:
+
+```python
+"mytheme": {
+    "name": "mytheme",
+    "description": "Short description",
+    "colors": { ... },
+    "spinner": { ... },
+    "branding": { ... },
+    "tool_prefix": "┊",
+},
+```
+
+### User skins (YAML)
+
+Users create `~/.hermes/skins/<name>.yaml`:
+
+```yaml
+name: cyberpunk
+description: Neon-soaked terminal theme
+
+colors:
+  banner_border: "#FF00FF"
+  banner_title: "#00FFFF"
+  banner_accent: "#FF1493"
+
+spinner:
+  thinking_verbs: ["jacking in", "decrypting", "uploading"]
+  wings:
+    - ["⟨⚡", "⚡⟩"]
+
+branding:
+  agent_name: "Cyber Agent"
+  response_label: " ⚡ Cyber "
+
+tool_prefix: "▏"
+```
+
+Activate with `/skin cyberpunk` or `display.skin: cyberpunk` in config.yaml.
+
+---
+
+## Important Policies
+### Prompt Caching Must Not Break
+
+Hermes-Agent ensures caching remains valid throughout a conversation. **Do NOT implement changes that would:**
+- Alter past context mid-conversation
+- Change toolsets mid-conversation
+- Reload memories or rebuild system prompts mid-conversation
+
+Cache-breaking forces dramatically higher costs. The ONLY time we alter context is during context compression.
+
+### Working Directory Behavior
+- **CLI**: Uses current directory (`.` → `os.getcwd()`)
+- **Messaging**: Uses `MESSAGING_CWD` env var (default: home directory)
+
+### Background Process Notifications (Gateway)
+
+When `terminal(background=true, notify_on_complete=true)` is used, the gateway runs a watcher that
+detects process completion and triggers a new agent turn. Control verbosity of background process
+messages with `display.background_process_notifications`
+in config.yaml (or `HERMES_BACKGROUND_NOTIFICATIONS` env var):
+
+- `all` — running-output updates + final message (default)
+- `result` — only the final completion message
+- `error` — only the final message when exit code != 0
+- `off` — no watcher messages at all
+
+---
+
+## Profiles: Multi-Instance Support
+
+Hermes supports **profiles** — multiple fully isolated instances, each with its own
+`HERMES_HOME` directory (config, API keys, memory, sessions, skills, gateway, etc.).
+
+The core mechanism: `_apply_profile_override()` in `hermes_cli/main.py` sets
+`HERMES_HOME` before any module imports. All 119+ references to `get_hermes_home()`
+automatically scope to the active profile.
+
+### Rules for profile-safe code
+
+1. **Use `get_hermes_home()` for all HERMES_HOME paths.** Import from `hermes_constants`.
+   NEVER hardcode `~/.hermes` or `Path.home() / ".hermes"` in code that reads/writes state.
+   ```python
+   # GOOD
+   from hermes_constants import get_hermes_home
+   config_path = get_hermes_home() / "config.yaml"
+
+   # BAD — breaks profiles
+   config_path = Path.home() / ".hermes" / "config.yaml"
+   ```
+
+2. **Use `display_hermes_home()` for user-facing messages.** Import from `hermes_constants`.
+   This returns `~/.hermes` for default or `~/.hermes/profiles/<name>` for profiles.
+   ```python
+   # GOOD
+   from hermes_constants import display_hermes_home
+   print(f"Config saved to {display_hermes_home()}/config.yaml")
+
+   # BAD — shows wrong path for profiles
+   print("Config saved to ~/.hermes/config.yaml")
+   ```
+
+3. **Module-level constants are fine** — they cache `get_hermes_home()` at import time,
+   which is AFTER `_apply_profile_override()` sets the env var. Just use `get_hermes_home()`,
+   not `Path.home() / ".hermes"`.
+
+4. **Tests that mock `Path.home()` must also set `HERMES_HOME`** — since code now uses
+   `get_hermes_home()` (reads env var), not `Path.home() / ".hermes"`:
+   ```python
+   with patch.object(Path, "home", return_value=tmp_path), \
+        patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
+       ...
+   ```
+
+5. **Gateway platform adapters should use token locks** — if the adapter connects with
+   a unique credential (bot token, API key), call `acquire_scoped_lock()` from
+   `gateway.status` in the `connect()`/`start()` method and `release_scoped_lock()` in
+   `disconnect()`/`stop()`. This prevents two profiles from using the same credential.
+   See `gateway/platforms/telegram.py` for the canonical pattern.
+
+6. **Profile operations are HOME-anchored, not HERMES_HOME-anchored** — `_get_profiles_root()`
+   returns `Path.home() / ".hermes" / "profiles"`, NOT `get_hermes_home() / "profiles"`.
+   This is intentional — it lets `hermes -p coder profile list` see all profiles regardless
+   of which one is active.
+
+## Known Pitfalls
+
+### DO NOT hardcode `~/.hermes` paths
+Use `get_hermes_home()` from `hermes_constants` for code paths. Use `display_hermes_home()`
+for user-facing print/log messages. Hardcoding `~/.hermes` breaks profiles — each profile
+has its own `HERMES_HOME` directory. This was the source of 5 bugs fixed in PR #3575.
+
+### DO NOT use `simple_term_menu` for interactive menus
+Rendering bugs in tmux/iTerm2 — ghosting on scroll. Use `curses` (stdlib) instead. See `hermes_cli/tools_config.py` for the pattern.
+
+### DO NOT use `\033[K` (ANSI erase-to-EOL) in spinner/display code
+Leaks as literal `?[K` text under `prompt_toolkit`'s `patch_stdout`. Use space-padding: `f"\r{line}{' ' * pad}"`.
+
+### `_last_resolved_tool_names` is a process-global in `model_tools.py`
+`_run_single_child()` in `delegate_tool.py` saves and restores this global around subagent execution. If you add new code that reads this global, be aware it may be temporarily stale during child agent runs.
+
+### DO NOT hardcode cross-tool references in schema descriptions
+Tool schema descriptions must not mention tools from other toolsets by name (e.g., `browser_navigate` saying "prefer web_search"). Those tools may be unavailable (missing API keys, disabled toolset), causing the model to hallucinate calls to non-existent tools. If a cross-reference is needed, add it dynamically in `get_tool_definitions()` in `model_tools.py` — see the `browser_navigate` / `execute_code` post-processing blocks for the pattern.
+
+### Tests must not write to `~/.hermes/`
+The `_isolate_hermes_home` autouse fixture in `tests/conftest.py` redirects `HERMES_HOME` to a temp dir. Never hardcode `~/.hermes/` paths in tests.
+
+**Profile tests**: When testing profile features, also mock `Path.home()` so that
+`_get_profiles_root()` and `_get_default_hermes_home()` resolve within the temp dir.
+Use the pattern from `tests/hermes_cli/test_profiles.py`:
+```python
+@pytest.fixture
+def profile_env(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    return home
+```
+
+---
+
+## Testing
+
+**ALWAYS use `scripts/run_tests.sh`** — do not call `pytest` directly. The script enforces
+hermetic environment parity with CI (unset credential vars, TZ=UTC, LANG=C.UTF-8,
+4 xdist workers matching GHA ubuntu-latest). Direct `pytest` on a 16+ core
+developer machine with API keys set diverges from CI in ways that have caused
+multiple "works locally, fails in CI" incidents (and the reverse).
+
+```bash
+scripts/run_tests.sh                                  # full suite, CI-parity
+scripts/run_tests.sh tests/gateway/                   # one directory
+scripts/run_tests.sh tests/agent/test_foo.py::test_x  # one test
+scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
+```
+
+### Why the wrapper (and why the old "just call pytest" doesn't work)
+
+Five real sources of local-vs-CI drift the script closes:
+
+| | Without wrapper | With wrapper |
 |---|---|---|
-| 1 | 免费端点 | NVIDIA NIM、OpenRouter free、OpenCode Zen free、Cloudflare Workers AI、Modal、ModelScope |
-| 2 | 单家 CodingPlan/TokenPlan | GLM CodingPlan、Kimi CodingPlan、MiMo TokenPlan |
-| 3 | 聚合平台 CodingPlan/TokenPlan | 火山方舟、腾讯云、阿里云百炼、百度千帆 |
-| 4 | 单家按量付费 | DeepSeek 官方、GLM 按量、Kimi 按量、MiMo 按量 |
-| 5 | 聚合平台按量付费 | 火山方舟按量、阿里云按量 |
-
-> ⚠️ **评审 Agent 内部也遵循此优先级**：每个 ReviewXXX 的 model 字段应放优先级最高的可用端点，fallback_models 按优先级递减排列。
-
-## ⚠️ 【最高优先级】修改代码必须评审（不可跳过）
-
-- **任何代码修改前必须调用多模型评审，无例外**
-- **Git pre-commit hook 会硬阻断未评审的提交，没有后门**
-- **禁止 `SKIP_REVIEW=1` 或 `ALLOW_UNREVIEWED_EDIT=1` 绕过评审**
-- **强制排除规则**：主模型是哪家的，**严禁**调用同家 ReviewXXX 评审——同一个模型写代码再自己评审自己，纯浪费 Token 且无交叉验证意义
-- 评审流程：改代码 → `task(category="ReviewXXX")` 调用不同模型评审 → M≥2 通过 → `mark-review-passed` → commit
-- **无论用户是否在当条消息中强调"禁止跳过评审"，都必须走评审流程**
-- 主模型是 MiMo 则用 ReviewGLM + ReviewKimi + ReviewDeepseek + ReviewQwen（排除 ReviewMimo）
-- 主模型是 DeepSeek 则用 ReviewGLM + ReviewKimi + ReviewQwen + ReviewMimo（排除 ReviewDeepseek）
-
-## 文件编辑安全（关键）
-
-- **修改文件时必须使用 `edit`（局部替换）。禁止使用 `write` 全量覆写，除非文件是全新的且不存在。**
-- 编辑任何文件前，必须先用 `read` 工具读取该文件。禁止编辑未读取过的文件。
-- 使用 `edit` 时，`oldString` 必须包含足够的上下文以唯一定位目标。禁止使用可能多次出现的单行匹配。
-- 编辑后，必须通过回读修改区域或运行 `lsp_diagnostics` 验证文件完整性。
-- 大文件（超过 300 行）应使用多次小的定向编辑，而非一次大的改动。
-- **禁止截断或遗漏现有代码。** 如果不确定完整内容，再次读取文件后再编辑。
-
-## 实时验证（关键）
-
-- **写代码前必须联网搜索（web search、librarian、context7 等）验证事实、API、库用法和文档。禁止仅凭记忆或训练数据。**
-- 使用任何库、框架或 API 时——即使是你"知道"的——必须先查阅最新文档。API 会变更、包会废弃、签名会演进。
-- 对事实不确定时（版本号、方法签名、配置选项、废弃状态），将记忆视为过期数据，直到在线验证。
-- 这尤其适用于：npm/pip/cargo 包、云服务商 API、框架版本、CLI 参数和配置格式。
-
-## Provider 与模型配置（关键）
-
-- **在 `opencode.json` 或 `oh-my-openagent.json` 中添加或更新任何 provider 时，必须：**
-  1. **验证平台确实提供该模型**——搜索 provider 官方文档/公告。禁止假设所有 provider 遵循 OpenAI 兼容的模型命名规范，即使 base URL 以 `/v1` 结尾。
-  2. **验证精确的模型 ID**——搜索 provider 的 API 文档获取正确的模型名称参数值。禁止猜测或从其他 provider 推断。
-  3. **验证上下文窗口、最大输出和输入限制**——查阅官方规格。禁止编造这些数字。
-  4. **检查模型变体（thinking/reasoning 级别）**——如果模型支持 `reasoning_effort` 或 `thinking` 变体（`low`/`medium`/`high`/`max`/`xhigh`），删除所有较低变体条目，在 models 列表和 whitelist 中只保留最高变体。禁止仅记录映射关系——必须从配置文件中物理删除较低变体。
-  5. **提交前验证**——通过查阅 provider 当前的 API 文档确认模型 ID 确实可用，而非过期的缓存数据。
-- **尚未支持某模型的平台不应配置该模型。** 移除或回退到平台支持的模型。
-- **禁止为 provider 配置其未公开文档化的模型。**
-
-## 修改范围纪律（关键）
-
-- **只修改用户明确要求修改的内容。其他一律不动。**
-- 禁止"改进"、"重构"、"清理"、"优化"或"修复"用户未提及的内容——无论问题看起来多明显。
-- 禁止触碰相邻代码、附近函数、相关文件或导入，除非用户请求直接需要。
-- 禁止添加注释、重新格式化、重命名变量或重组代码，除非明确要求。
-- 如果发现范围外的真实问题，先提出警告。禁止悄悄修复。
-- 不确定某修改是否在范围内时——不在范围内。先询问。
-
-## 仓库目录整洁（关键）
-
-- **新增或修改文件前，必须先判断文件应该放在哪个目录。** 代码、脚本、文档、测试、部署配置、临时产物应放到对应目录（如 `app/`、`scripts/`、`docs/`、`tests/`、`deploy/` 等），不得为了省事把新文件直接放在仓库根目录。
-- 仓库根目录只允许放真正属于全项目级别的入口文件、核心配置、README/AGENTS、依赖清单等。调试脚本、一次性诊断文件、导出文件、日志、截图、图片、私密材料和构建产物不得放在根目录；用完即删，需保留则移动到合适目录并写明用途。
-
-## GitHub Copilot 全局规则
-
-- **Copilot 只保留免费模型**，不付费订阅 Copilot Pro/Pro+
-- **白名单只保留 Arena + Artificial Analysis 综合排名靠前的 2 个免费模型**（2026-05 验证）：
-  - `copilot.gpt-4.1`（Arena #95, AI Index 39）
-  - `copilot.claude-haiku-4-5`（Arena #101, AI Index 37）
-- **用途**：仅作为小 AGENT（sisyphus-junior）的 fallback 模型，不作为主模型或大 AGENT 模型
-- **定期验证**：每季度检查 Arena 和 Artificial Analysis 排名，如有更优免费模型则替换
-
-## 语言
-
-- 所有回复使用中文。
-
-## 模型准入门槛（关键）
-
-给各 AGENT 工具（OpenCode+OMO、KiloCode、Hermes-Agent、OpenClaw、MiMo-Code 等）配置添加新模型时，**不得添加比已有模型列表中排行最低的模型排名更低的新模型**。
-
-排行参考：
-- https://artificialanalysis.ai/leaderboards/models?status=all
-- https://arena.ai/leaderboard/text
-
-操作流程：
-1. 查看新模型在上述排行榜的排名
-2. 确认当前配置中排名最低的模型
-3. 如果新模型排名低于最低门槛，不添加
-
-## 语法校验与测试（关键）
-
-- **每次修改完代码后，必须进行严格的语法校验**（如运行 linter、类型检查、语法分析等），确保代码无语法错误、无类型错误、符合项目代码规范，不得提交或部署未通过语法校验的代码。
-- **推送代码前，必须确保所有单元测试通过**。如果有测试框架，任何会导致测试失败的改动都不应推送。
-
-## 多端体验一致性（关键）
-
-- **所有设备的 OpenCode+OMO 使用体验应尽可能一致**：配置文件（opencode.json、oh-my-openagent.json、AGENTS.md、auth.json）在所有设备上保持同步
-- **全局要求必须同步**：AGENTS.md 中的全局要求修改后，立即同步到所有设备家目录 + GitHub 仓库
-- **仓库内配置必须对齐**：涉及 AI 调用的 git 仓库内如果有自己的 opencode.json/oh-my-openagent.json，必须与全局配置保持一致
-- **同步全局配置后必须同步所有项目目录**：如果某个项目目录有独立的 opencode.json，同步全局时必须一并更新，避免出现 TUI 中已禁用的 Provider 又出现
-- **同步全局 AGENTS.md 后必须同步所有项目目录**：`/root/crawl_cars`、`/root/.hermes` 等项目目录如果有自己的 AGENTS.md，用全局最新版本覆盖。同理 E:\Codes 下的所有 repo 也要同步
-- **项目级 AGENTS.md 不能直接覆盖**：先读取目标文件内容，有项目特有规则的部分保留，冲突处以全局为准或询问用户，无冲突处合并
-- **Windows 通过 SSH 运行 OpenCode 时，项目路径会被记录为 Windows 格式**：如 `O:/codes/billiards_tqt` 而非 Linux 路径，这些会话在 Linux 端 OpenCode 重启时会导致 Drizzle 查询错误。解决方案：定期清理 OpenCode 数据库中的无效路径会话，但不能直接删除整个数据库（违反"只改用户要求改的"规则）
-
-## 全局要求同步检查（关键）
-
-- **每个 git 仓库内的 OpenCode 会话，每天首次启动时必须检查远程 AGENTS.md 是否有更新**：对比本地与 GitHub `Fatty911/Personal_commonly_used/ai_tools/opencode/AGENTS.md` 的版本
-- **会话运行期间每半小时检查一次**：`git pull` 或 `webfetch` 远程 AGENTS.md，发现更新立即读取并合并到当前会话上下文
-- **发现远程规则变更立即应用**：不等到下次重启，当前会话内立即按照最新规则行事
-- **不只检查全局仓库**：当前 git 项目如果有自己的远程仓库（如 `Fatty911/crawl_cars`），也要同步检查其 AGENTS.md 是否有更新
-
-## 提交推送与运行监测（关键）
-
-- **任务完成后必须自动提交并推送**：在确保代码质量、语法校验和必要测试通过后，必须自动 `commit` 并 `push`，不能只把改动留在本地。若项目要求 Pull Request，推送后创建或更新 PR，并在 CI 通过后继续合并；除非用户明确要求暂停或只做本地改动。
-- **推送、热更新、重启或部署容器后必须监测运行情况**：必须继续检查 CI/容器状态、健康接口和关键日志，确认服务持续运行后再交付结论。
-- **推送代码前，必须确保所有单元测试通过**：如果有测试框架，任何会导致测试失败的改动都不应推送。
-- **推送后必须监控 CI 测试**：提交推送完必须至少监控到测试成功；如果时间窗口允许修改的工作流运行，还应监控修改的工作流运行结果是否符合预期。
-
-## 多模型共识评审机制（关键）
-
-> ⚠️ **【强制规则】所有代码修改前必须触发多模型共识评审，无例外。**
-> 
-> 这是解决"不同模型改出来的代码各不一样、花式报错"问题的核心机制。
-
-### 核心原则
-
-- **任何代码修改都必经共识评审**（除纯查询/读取操作外）
-- **通过并行启动 N 个 category 评审任务实现多模型评审**——每个 category 绑定独立模型
-- **N 选 M 通过制 + 懒启动**：先并行 N 个（如 N=3），全部通过不启动更多；不达标再逐启动 N+1/N+2
-- **流程**：排除主模型同家 Review → 并行启动 N 个 → M≥2 立即继续 → 不足则逐加 → 标记 → 同步推送
-- 评审 Agent **只有读权限**（不可 edit/bash），不会修改代码
-
-### ⚠️ 技术说明
-
-`task()` 的 `subagent_type` 是固定枚举，不支持自定义名。但 `category` 支持 OMO 配置中任意名称，**经实测 `task(category="ReviewGLM")` 可用**。自定义 ReviewXXX 通过 category 机制运行，非 subagent_type。
-
-### 共识评审工作流程
-
-```
-主控 agent（sisyphus）收到修改请求
-  │
-  ├── 第一步：确定当前主模型，排除对应的 Review category
-  │   例如主模型是 volcengine-coding/glm-5.1 → 排除 ReviewGLM
-  │   从剩余 Review category 中选 3 个并行启动
-  │
-  ├── 第二步：Sisyphus 先启动前 N 个评审任务（默认 N=2）
-  │   task(category="ReviewDeepseek", prompt="...", run_in_background=true)
-  │   task(category="ReviewKimi", prompt="...", run_in_background=true)
-  │   task(category="ReviewMimo", prompt="...", run_in_background=true)
-  │   ⚠️ 先启动 N 个，全部通过则不启动第 N+1 个；不达标再逐个启动后续 Review
-  │
-  ├── 第三步：监控评审状态（每 3 分钟检查一次）
-  │   - 如果 N 个全部通过 → 不启动第 N+1 个，立即继续任务（省 Token）
-  │   - 如果 N 个中达到 M 个通过 → 立即继续任务
-  │   - 如果 N 个中通过不足 M 个 → 启动第 N+1、N+2…逐一启动
-  │   - 主 Agent 每 3 分钟检查一次未返回结果的评审状态
-  │
-  ├── 第四步：收集评审结果
-  │   - 后续返回的评审结果如果提出问题 → 主 AGENT 必须查看并改进
-  │   - 后续返回的评审结果没提出问题 → 忽略，提升效率
-  │
-  └── 第五步：标记评审通过 → 同步到全端 → 推送
-```
-
-### 评审 Category 模型覆盖
-
-每个 review category 绑定独立模型，确保多模型交叉验证：
-
-| Category | 主模型 | Fallback | 定位 |
-|---|---|---|---|
-| **ReviewGLM** | volcengine-coding/glm-5.1 | nvidia-glm-5.1, modal-glm-5.1, modelscope-glm-5 | GLM-5.1 评审 |
-| **ReviewDeepseek** | deepseek/deepseek-v4-pro | volcengine-deepseek | DeepSeek V4 评审 |
-| **ReviewKimi** | volcengine-coding/kimi-k2.6 | nvidia-kimi, cloudflare-kimi, openrouter-kimi-free, cf-kimi-k2.7 | Kimi K2.6 评审 |
-| **ReviewQwen** | alibaba/qwen3.7-max | — | Qwen 3.7 评审 |
-| **ReviewMimo** | mimo-tokenplan/mimo-v2.5-pro | — | MiMo V2.5 评审 |
-| **ReviewMinimax** | nvidia/nvidia-minimax-m3 | — | MiniMax M3 评审 |
-| **ReviewGrok** | proxy_xai/grok-4.3 | — | Grok 4.3 兜底评审 |
-
-> ⚠️ **设计原则**：每个 ReviewXXX 只包含 XXX 家的模型。优先调用 ReviewGLM/ReviewKimi/ReviewDeepseek，ReviewGrok 作为兜底。
-
-### 评审 Provider 优先级（每个 ReviewXXX 内部）
-
-| 优先级 | 类型 | 示例 |
-|---|---|---|
-| 1 | 免费端点 | nvidia, OpenCode Zen, OpenRouter free, Cloudflare, Modal, ModelScope |
-| 2 | 单家 Plan | GLM CodingPlan, Kimi CodingPlan, MiMo TokenPlan |
-| 3 | 聚合平台 Plan | 火山方舟, 腾讯云, 阿里云百炼, 百度千帆 |
-| 4 | 单家按量付费 | DeepSeek 官方, GLM 按量, Kimi 按量, MiMo 按量 |
-| 5 | 聚合平台按量付费 | 火山方舟按量, 阿里云按量 |
-
-### 评审模型选择规则（强制）
-
-**评审必须使用和写代码的主模型不同的模型，禁止用同模型评审自己的代码。**
-
-选择逻辑：
-1. 当前主模型是哪家 → 排除对应的 Review category
-2. 从剩余 Review category 中选 3 个并行评审
-3. 都不可用时，用 ReviewGrok 兜底
-
-| 主模型 | 排除 | 评审优先选择 |
-|---|---|---|
-| DeepSeek V4 Pro | ReviewDeepseek | ReviewGLM + ReviewKimi + ReviewQwen + ReviewMimo + ReviewMinimax |
-| GLM-5.1 | ReviewGLM | ReviewDeepseek + ReviewKimi + ReviewQwen + ReviewMimo + ReviewMinimax |
-| Kimi K2.6 | ReviewKimi | ReviewGLM + ReviewDeepseek + ReviewQwen + ReviewMimo + ReviewMinimax |
-| Qwen 3.7 Max | ReviewQwen | ReviewGLM + ReviewKimi + ReviewDeepseek + ReviewMimo + ReviewMinimax |
-| MiMo V2.5 Pro | ReviewMimo | ReviewGLM + ReviewKimi + ReviewDeepseek + ReviewQwen + ReviewMinimax |
-| MiniMax M3 | ReviewMinimax | ReviewGLM + ReviewKimi + ReviewDeepseek + ReviewQwen + ReviewMimo |
-| 其它模型 | 无 | ReviewGLM + ReviewKimi + ReviewDeepseek + ReviewQwen + ReviewMimo + ReviewMinimax |
-
-> 任何 Review 不可用时，用 ReviewGrok（proxy_xai/grok-4.3）兜底补审。
-
-**禁止跳过评审直接修改代码。**
-
-### 默认评审策略
-
-> **用户未明确指定评审参数时，自动采用以下默认策略：**
-> - **N=3**（并行启动 3 个 Review category）
-> - **M=2**（3 中至少 2 票通过即放行）
-> - 无需再次询问用户，直接并行启动评审
->
-> ⚠️ **服务器资源限制**：当前生产服务器为 2核4G，3 个 Oracle 并行评审峰值额外内存消耗约 90-240MB。
-
-### 评审结果模型标注（强制）
-
-- **评审 Oracle 必须在结果第一行注明所使用的模型名称**，格式：`模型：xxx`
-- prompt 中加入：`请在评审结果第一行注明你所使用的模型名称（格式："模型：xxx"）。`
-- 如果模型无法确定自身名称，则注明 fallback 链中该序号对应的预期模型
-- **评审结果不得匿名，必须可追溯到具体模型**
-- 汇总评审结果时，必须展示每个评审对应的模型名称
-
-### Git Pre-commit Hook 强制评审（底层强制）
-
-> **除了提示词层面的规则，Git 层面也强制要求评审：**
-
-**Hook 位置**: `C:\Users\Administrator\.git-hooks\pre-commit`
-
-**工作机制**：
-1. 每次 `git commit` 前，hook 检查是否有代码修改（排除 `.md`/`.txt`/`.json` 纯文档）
-2. 如果有代码修改，要求先通过多模型评审
-3. 评审通过后，调用 `~/.git-hooks/mark-review-passed` 创建临时标记文件（有效期 5 分钟）
-4. 标记文件存在时，允许提交
-
-**跳过方式**（仅紧急情况）：
-```bash
-SKIP_REVIEW=1 git commit -m "emergency fix"
-```
-
-**评审通过后必须执行**：
-```bash
-~/.git-hooks/mark-review-passed review-glm.txt review-kimi.txt review-deepseek.txt
-```
-
-> ⚠️ **marker 脚本必须接收评审任务的实际输出文件**，不能让模型自己编摘要。pre-commit hook 会验证标记文件包含真实评审内容，否则拒绝提交。
-
-> ⚠️ **这是底层强制机制，即使模型忘记提示词规则，Git 也会阻止未评审的代码提交。**
-
-**适用范围**：
-- **Windows (E:\Codes\)**: AI_XR_Relay_familyai, aider, Auto_add_notes_to_WeChat_group_members, AutoBuild_OpenWrt_for_XiaoMi_R4, Badminton-court-management-system, billiards_tqt, crawl_cars, LibreChat, lobe-chat, opencode-stock, Personal_commonly_used, tabby, zbpack_tmp
-- **Windows (C:\Users\)**: Personal_commonly_used, hermes-agent
-- **racknerd**: hermes-agent, AutoBuild_OpenWrt, crawl_cars, LibreChat, lobe-chat, Badminton-court, opencode-stock, /root 主 repo
-- **jstq**: AutoBuild_OpenWrt, billiards_tqt
-- **dmit**: 无 repo，仅安装 mark-review-passed 到 PATH
-
-### Git Pre-push Hook 强制单元测试（底层强制）
-
-> **除了评审，Git 层面也强制要求单元测试通过：**
-
-**Hook 位置**: `C:\Users\Administrator\.git-hooks\pre-push`
-
-**工作机制**：
-1. 每次 `git push` 前，hook 检测项目类型（Node.js/Python/Go/Java）
-2. 自动运行对应的完整测试套件（`npm test` / `pytest` / `go test` / `mvn test` / `gradlew test`）
-3. 测试全部通过才允许推送
-4. 测试失败则拒绝推送
-
-**支持的项目类型**：
-- **Node.js**: `npm test`（检测 `package.json` 中的 test 脚本）
-- **Python**: `pytest`（检测 `pytest.ini` / `pyproject.toml` / `setup.py`）
-- **Go**: `go test ./...`（检测 `go.mod`）
-- **Java Maven**: `mvn test`（检测 `pom.xml`）
-- **Java Gradle**: `./gradlew test`（检测 `build.gradle`）
-
-**跳过方式**（仅紧急情况）：
-```bash
-SKIP_TESTS=1 git push
-```
-
-### Git Hooks 文件清单
-
-| Hook | 触发时机 | 检查内容 | 跳过方式 |
-|------|----------|----------|----------|
-| **pre-commit** | `git commit` | 多模型评审 + 快速测试 | `SKIP_REVIEW=1` |
-| **pre-push** | `git push` | 完整单元测试 | `SKIP_TESTS=1` |
-
-> ⚠️ **这是底层强制机制，即使模型忘记提示词规则，Git 也会阻止未评审、未测试的代码提交和推送。**
-
-## 代码级限制（程序强制）
-
-> 以下限制尽量使用 Git hooks 和 OMO 运行包补丁实现，不能把普通提示词当成硬约束。
-
-### 当前真实生效的硬防线
-
-| 防线 | 位置 | 强制内容 |
-|------|------|---------|
-| **OMO edit/write/multiedit 评审拦截** | `C:\Users\Administrator\node_modules\oh-my-openagent\dist\index.js` 本地补丁 | 代码文件修改前必须存在 10 分钟内的 `/tmp/.review_passed_*` 标记；`.md/.txt/.json` 豁免 |
-| **runtime_fallback 静默成功检测** | `oh-my-openagent` 本地补丁 + `oh-my-openagent.json` | DeepSeek 类 provider 如果 `finish=stop` 但无可见输出/0 output token，则转成 retryable failure 进入 fallback |
-| **pre-commit** | `C:\Users\Administrator\.git-hooks\pre-commit` | 代码提交前必须存在 5 分钟内的评审标记 |
-| **pre-push** | `C:\Users\Administrator\.git-hooks\pre-push` | 推送前运行项目测试 |
-
-### 评审强制机制（edit/write 前硬阻断）
-
-代码文件修改前必须先完成多模型评审，并执行：
+| Provider API keys | Whatever is in your env (auto-detects pool) | All `*_API_KEY`/`*_TOKEN`/etc. unset |
+| HOME / `~/.hermes/` | Your real config+auth.json | Temp dir per test |
+| Timezone | Local TZ (PDT etc.) | UTC |
+| Locale | Whatever is set | C.UTF-8 |
+| xdist workers | `-n auto` = all cores (20+ on a workstation) | `-n 4` matching CI |
+
+`tests/conftest.py` also enforces points 1-4 as an autouse fixture so ANY pytest
+invocation (including IDE integrations) gets hermetic behavior — but the wrapper
+is belt-and-suspenders.
+
+### Running without the wrapper (only if you must)
+
+If you can't use the wrapper (e.g. on Windows or inside an IDE that shells
+pytest directly), at minimum activate the venv and pass `-n 4`:
 
 ```bash
-~/.git-hooks/mark-review-passed
+source venv/bin/activate
+python -m pytest tests/ -q -n 4
 ```
 
-当前本机 OMO 运行包已补丁化：`write` / `edit` / `multiedit` 修改代码文件时，如果 10 分钟内没有 `.review_passed_*` 标记，工具调用会直接失败。此限制用于防止 MiMo 等模型忘记或忽略 AGENTS.md。
+Worker count above 4 will surface test-ordering flakes that CI never sees.
 
-**重要限制**：这是本机 npm 包补丁，不是上游 OMO 官方能力。升级或重装 `oh-my-openagent` 后必须重新检查/重打补丁；否则 edit 层硬阻断会退化为只有 Git pre-commit 阻断。
+Always run the full suite before pushing changes.
 
-### DeepSeek 静默截断处理
+---
 
-DeepSeek 官方 API 便宜，继续使用；但如果它返回 `finish=stop` 且无可见输出或 output token 为 0，不得视为成功。当前 `runtime_fallback.silent_success_detection` 已启用，命中后会构造 `SilentCompletionError`，让 OMO fallback/retry 接管。
+## 🤖 全局要求（所有 AI Agent 必读）
 
-### 辅助脚本
+> ⚠️ **所有操作此项目的 Agent（包括 OpenCode、OhMyOpenCode、Claude Code 等）必须遵守以下规则。**
+> 工作流中通过 OpenCode/OMO 调用大模型时，必须先读取本文件的完整内容。
 
-| 脚本 | 位置 | 用途 |
-|------|------|------|
-| **pre-edit-guard.sh** | `~/.config/opencode/hooks/` | 外部脚本版编辑检查；仅在被显式调用时生效，不能假设 OMO 官方会自动执行 |
-| **config-sync-validator.sh** | `~/.config/opencode/hooks/` | opencode.json/kilo.json/omo.json 配置同步校验 |
-| **validate-model-whitelist.sh** | `~/.config/opencode/hooks/` | Provider whitelist 与 models 定义一致性校验 |
-| **pre-save-validator.sh** | `~/.config/opencode/hooks/` | JSON/YAML/Python 保存前语法自动校验 |
-| **post-edit-diagnostics.sh** | `~/.config/opencode/hooks/` | 编辑后运行 LSP 诊断（TS/JS/Python/Go/Shell） |
-| **code-pattern-guard.py** | `~/.config/opencode/hooks/` | 禁止 `as any`、`@ts-ignore`、`@ts-expect-error`、空 catch 块、console.log 残留 |
+### 一、语言规范
+- **所有回复使用中文**，除非用户明确要求其他语言。
+- 代码注释使用英文，文档和交互信息使用中文。
 
-### Git Hooks 集成
+### 二、代码修改与提交
 
-所有上述代码级检查已集成到 Git pre-commit hook 中：
+| 规则 | 说明 |
+|------|------|
+| **虚拟环境激活** | 运行 Python 前必须激活：`source venv/bin/activate` |
+| **提交前测试** | 推送前确保测试通过：`pytest tests/` |
+| **临时文件清理** | 调试产生的临时文件测试完成后必须删除 |
+| **文档同步更新** | 新增功能或修改结构时，必须同步更新 README 和 AGENTS.md |
 
-```
-pre-commit hook 检查流程:
-  1. 多模型评审检查（必须）
-  2. 代码模式校验 (code-pattern-guard.py)（警告，不阻断）
-  3. 配置同步校验 (config-sync-validator.sh)
-  4. 模型白名单校验 (validate-model-whitelist.sh)
-  5. 快速测试检查
-```
+### 三、工作流 AI 调用规则
 
-跳过方式：
-- `SKIP_REVIEW=1 git commit` — 跳过所有检查
-- `SKIP_CONFIG_SYNC=1 git commit` — 仅跳过配置同步检查蛎
+| 规则 | 说明 |
+|------|------|
+| **优先读取 AGENTS.md** | 工作流通过 OpenCode/OMO 调用 AI 时，必须先读取本项目 AGENTS.md |
+| **冲突解决策略** | 上游同步冲突时，保留上游重要更新，同时保留本地定制 |
+| **安全规则** | 禁止泄露任何 API Key、Token 或环境变量 |
 
-## 总结
+### 四、测试与部署
 
-- edit > write（已有文件，始终如此）🔒 程序级强制
-- 先读后改（无例外）🔒 程序级强制
-- 改后验证（始终如此）🔒 程序级强制
-- 写代码前联网验证（禁止凭记忆）
-- 只改用户让改的（禁止擅自修改）
-- 回复使用中文（始终如此）
-- 语法校验后才可提交（始终如此）🔒 程序级强制
-- 测试通过后才可推送（始终如此）🔒 程序级强制
-- 代码修改前必须多模型共识评审（无例外）🔒 程序级强制
-- 禁止 `as any` / `@ts-ignore` / 空 catch 🔒 程序级强制
-- Provider 模型配置一致性 🔒 程序级强制
-- 配置跨文件同步 🔒 程序级强制
-- Git pre-commit hook 底层强制评审（无法跳过）
-- Git pre-push hook 底层强制单元测试（无法跳过）
+| 规则 | 说明 |
+|------|------|
+| **单元测试** | 推送前确保测试通过：`pytest tests/` |
+| **禁止 force push** | 除非用户明确要求，否则禁止使用 `git push --force` |
 
-## 配置同步（关键）
+### 五、关键文件速查
 
-只要涉及到配置模型，以下所有位置必须同步改写，无一例外：
+| 文件 | 用途 |
+|------|------|
+| `AGENTS.md` | AI Agent 全局约束（本文件）|
+| `.github/workflows/sync-upstream.yml` | 上游同步 + AI 冲突解决 |
+| `custom_scripts/resolve_upstream_conflicts.py` | Python AI 冲突解决脚本 |
+| `custom_scripts/pick_best_model.py` | 模型选择脚本 |
+| `run_agent.py` | AIAgent 核心类 |
+| `tools/registry.py` | 工具注册中心 |
 
-> ⚠️ **盘符规则**：Windows10 和 Windows11 双系统，各自启动后自己的系统盘都是 C:，另一个系统盘都是 D:。同步时始终用 C: → D:（当前系统推送到另一系统），无需关心当前是哪个系统。
->
-> ⚠️ **使用习惯**：用户习惯右键点击开始菜单运行终端，终端默认运行在用户家目录（`C:\Users\Administrator`）。因此用户可能在任意一个 Windows 系统的 Administrator 目录下运行 OpenCode、配置 OpenCode+OMO。配置文件实际位置取决于当前启动的系统盘符。
+---
 
-1. **本机 opencode 配置**: `C:\Users\Administrator\.config\opencode\opencode.json`
-2. **本机 OMO 插件配置**: `C:\Users\Administrator\.config\opencode\oh-my-openagent.json`
-3. **本机 auth 配置**: `C:\Users\Administrator\.local\share\opencode\auth.json`
-4. **另一系统 opencode 配置**: `D:\Users\Administrator\.config\opencode\opencode.json`
-5. **另一系统 OMO 插件配置**: `D:\Users\Administrator\.config\opencode\oh-my-openagent.json`
-6. **另一系统 auth 配置**: `D:\Users\Administrator\.local\share\opencode\auth.json`
-7. **本机 KiloCode 配置**: `C:\Users\Administrator\AppData\Roaming\kilo\kilo.json`
-8. **GitHub 所有涉及 AI 调用的仓库**:
-   - `Fatty911/Personal_commonly_used/ai_tools/opencode/`
-   - `Fatty911/Personal_commonly_used/ai_tools/KiloCode/`
-   - `Fatty911/Personal_commonly_used/ai_tools/hermes-agent/`
-   - `Fatty911/hermes-agent`
-9. **远程服务器 root@racknerd.jiucai.eu.org**:
-   - `/root/.config/opencode/opencode.json`
-   - `/root/.config/opencode/oh-my-openagent.json`
-   - `/root/.local/share/opencode/auth.json`
-   - `/root/.hermes/config.yaml`
-   - `/root/.hermes/profiles/me138/config.yaml`
-   - `/root/.hermes/profiles/me152/config.yaml`
-   - `/root/.hermes/auth.json`
-10. **远程服务器 root@jstq.com.cn**:
-    - `/root/.config/opencode/opencode.json`
-    - `/root/.config/opencode/oh-my-openagent.json`
-    - `/root/.local/share/opencode/auth.json`
-11. **远程服务器 root@dmit.jiucai.eu.org**:
-    - `/root/.config/opencode/opencode.json`
-    - `/root/.config/opencode/oh-my-openagent.json`
-    - `/root/.local/share/opencode/auth.json`
-
-改写时统一遵循以下原则：
-- 只保留最新代模型（如 DeepSeek V4、Kimi K2.6、GLM-5.1、Qwen 3.7）
-- 变体只保留最高思考程度
-- 免费优先，付费辅助
-- 各 Provider 按用户指定规则精简白名单
-
-## Hermes-Agent 配置自动同步到 GitHub（关键）
-
-- **每次修改 Hermes-Agent 配置**（三个 `config.yaml`、skills、scripts、systemd 服务文件等）**并验证正确后**，必须自动同步到 GitHub：
-  ```bash
-  git clone git@github.com:Fatty911/Personal_commonly_used.git /tmp/hermes-sync
-  cd /tmp/hermes-sync
-  # 复制以下文件：
-  #   /root/.hermes/config.yaml → ai_tools/hermes-agent/config.yaml
-  #   /root/.hermes/profiles/me138/config.yaml → ai_tools/hermes-agent/profiles/me138/config.yaml
-  #   /root/.hermes/profiles/me152/config.yaml → ai_tools/hermes-agent/profiles/me152/config.yaml
-  #   /root/.hermes/skills/ → ai_tools/hermes-agent/skills/
-  #   /root/.hermes/scripts/ → ai_tools/hermes-agent/scripts/
-  #   /root/.config/systemd/user/hermes-gateway-me*.service → ai_tools/hermes-agent/systemd/
-  git add ai_tools/hermes-agent/ && git commit -m "hermes-agent: 同步 racknerd 生产配置" && git push
-  ```
-- **禁止推送含真实 API key 的 .env 文件**；须用 `sed 's/=.*/=REDACTED/'` 去敏后再生成 `.env.example`
-- **同步时机**：每次改完配置 → 验证正确 → 立即执行上述流程 → 再发结论给用户
-- **已有案例**：2026-06-19 改了 `model.provider`、`terminal.backend` 等多项配置，只在 VPS 上生效，未同步到 GitHub 备份；且初版执行时只提取了 .git 目录导致删除了 89 个仓库文件（已 revert 恢复）
-
-## ⚠️ plugin 字段跨端差异（关键）
-
-- **Windows**：需要 `plugin: ["oh-my-openagent@latest"]` 手动声明（npm 自动检测不生效）
-- **Linux**（racknerd/jstq/dmit）：npm 自动检测 + 手动声明**都用 `oh-my-openagent@latest`** 格式，两者一致不会重复
-- **同步后无需特殊处理**：`oh-my-openagent@latest` 在 Windows 和 Linux 端通用，不再需要同步后清空 plugin 字段
-- **禁止**：使用 `oh-my-openagent`（不带 `@latest`），会导致 Linux 端 OMO 重复注入被禁用
-
-## 已知 Bug 与解决方案
-
-### 自动升级脚本分离
-
-OpenCode 和 Hermes-Agent 的自动升级脚本分开管理，互不影响：
-
-| 脚本 | 位置 | 升级内容 | cron |
-|---|---|---|---|
-| **auto-upgrade-all.sh** | `/root/.config/opencode/scripts/` | OpenCode + OMO 插件 | `0 0,10,20 * * *` |
-| **auto-upgrade-hermes.sh** | `/root/.hermes/` | Hermes-Agent + Gateway | `0 0,10,20 * * *` |
-
-- 删除 Hermes-Agent 不会影响 OpenCode 升级
-- 日志分别存储在各自目录下
-- 脚本已同步到 racknerd 和 jstq
-
-### 1. OMO 重复注入被禁用
-- **现象**：OpenCode 启动时显示 "Duplicate OMO plugin entries detected"，TUI 只显示 Build 和 Plan
-- **根因**：`plugin: ["oh-my-openagent"]` 与 npm 自动检测的 `oh-my-openagent@latest` 字符串不同，被当成两个实例
-- **解决**：统一使用 `plugin: ["oh-my-openagent@latest"]`，与 npm 检测结果一致
-- **已修复**：2026-06-13
-
-### 2. npm 升级 OMO 失败 (ENOTEMPTY)
-- **现象**：自动升级脚本执行 `npm install -g oh-my-openagent@latest` 报 `ENOTEMPTY: directory not empty, rename`
-- **根因**：npm 升级时旧目录残留 `.oh-my-openagent-*` 临时目录，阻止重命名
-- **解决**：在 npm install 前加 `rm -rf /usr/lib/node_modules/.oh-my-openagent-*`
-- **已修复**：2026-06-12（racknerd + jstq 升级脚本已更新）
-
-### 3. OpenCode 版本过旧导致 OMO 不识别
-- **现象**：racknerd 上 OpenCode 1.14.41，OMO Agent 不显示
-- **根因**：自动升级脚本用 `curl https://opencode.ai/install.sh`（URL 多了 `.sh`），404 静默失败
-- **解决**：修正为 `curl https://opencode.ai/install`，并加 npm 三重保险
-- **已修复**：2026-06-02
-
-### 4. OMO 自定义 category 不生效
-- **现象**：`task(category="ReviewGLM")` 报 "Unknown category"
-- **根因**：OMO 在 session 启动时缓存 category 列表，session 内修改配置不生效；且旧版本可能不支持自定义 category
-- **解决**：改完 OMO 配置后必须重启 OpenCode session；使用 `@latest` 格式确保版本最新
-- **已修复**：2026-06-12
-
-### 5. 自定义 subagent_type 不可用
-- **现象**：`task(subagent_type="ReviewGLM")` 报错，无法调用自定义 Agent
-- **根因**：`task()` 的 `subagent_type` 是固定枚举（oracle, explore, librarian 等），不支持自定义名称
-- **解决**：改用 `task(category="quick/deep/ultrabrain")` 实现多模型评审分发
-- **已修复**：2026-06-12
-
-### 6. OpenCode SessionRetry 无限重试
-- **现象**：provider 月限额后 fallback 不切换，同一模型重试 10+ 次
-- **根因**：OpenCode 内部 SessionRetry 对 5xx/403 无限重试（指数退避），OMO fallback 永远等不到介入机会
-- **解决**：手动切换主模型；等 OpenCode 官方合并 maxAttempts 配置（GitHub issue #26675）
-- **状态**：未解决，OpenCode 已知缺陷
-// test review config - 06/02/2026 19:08:15
-
-## Provider 白名单强制规则
-
-- **开启 Provider 必须配白名单**：有 auth.json key 的 Provider 必须设 whitelist，不设会导致 TUI 显示全部模型
-- **模型 ID 必须查官网确认**：改 models/whitelist 前必须联网查 Provider 官方文档确认模型名称、ID、参数
-- **不设白名单的 Provider 要禁用**：避免 provider: auto 时匹配到不该用的端点
+**最后更新**: 2025-04-21
+**维护者**: Fatty911 + OpenCode Agent
