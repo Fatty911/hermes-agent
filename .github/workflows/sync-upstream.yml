@@ -50,7 +50,7 @@ jobs:
           # Save local workflow files before merge (GITHUB_TOKEN cannot push workflow changes)
           rm -rf /tmp/local-wf
           mkdir -p /tmp/local-wf
-          cp -r .github/workflows/ /tmp/local-wf/ 2>/dev/null || true
+          cp -r .github/workflows/. /tmp/local-wf/ 2>/dev/null || true
 
           git merge upstream/main --no-edit --no-commit || true
           # Auto-resolve conflicts: accept upstream for everything except workflows
@@ -58,7 +58,7 @@ jobs:
           git add -A 2>/dev/null || true
           # Restore local workflow files
           rm -rf .github/workflows/
-          cp -r /tmp/local-wf/ .github/workflows/
+          cp -r /tmp/local-wf/. .github/workflows/
           git add .github/workflows/
           git commit -m "chore: sync upstream (preserve local workflows) [auto-sync]" || true
 
