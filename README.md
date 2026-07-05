@@ -261,3 +261,7 @@ scripts/run_tests.sh
 MIT — see [LICENSE](LICENSE).
 
 Built by [Nous Research](https://nousresearch.com).
+
+### Recent Contributions (2026-07-05)
+- PR #58991: feat(error-classifier): add Chinese provider error patterns — 新增国产AI平台（阿里百炼/百度千帆/火山方舟/腾讯等）中文错误消息识别，包括计费、限流、配额、认证等模式
+- PR #12443 (existing): fix(providers): support api_key_env alongside key_env for custom providers
