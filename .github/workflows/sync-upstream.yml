@@ -42,7 +42,11 @@ jobs:
             git merge --ff-only upstream/main
           else
             echo "Diverged, creating merge commit..."
-            git merge upstream/main --no-edit --no-commit
+            git merge upstream/main --no-edit --no-commit || true
+            # 处理 modify/delete 冲突：接受上游版本
+            git checkout --theirs . 2>/dev/null || true
+            git add -A 2>/dev/null || true
+            # 保留本地 workflow 文件
             git checkout HEAD -- .github/workflows/ || true
             git commit -m "chore: sync upstream (preserve local workflows) [auto-sync]"
           fi
