@@ -12,7 +12,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: ${ github.event.repository.fork }
+    if: ${{ github.event.repository.fork }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,12 +43,10 @@ jobs:
           else
             echo "Diverged, creating merge commit..."
             git merge upstream/main --no-edit --no-commit
-            # GITHUB_TOKEN cannot push workflow file changes, preserve local versions
             git checkout HEAD -- .github/workflows/ || true
             git commit -m "chore: sync upstream (preserve local workflows) [auto-sync]"
           fi
 
-          # Try push, retry without workflow changes if it fails
           if ! git push origin main 2>/dev/null; then
             echo "Push failed, retrying without workflow changes..."
             git checkout HEAD -- .github/workflows/ || true
