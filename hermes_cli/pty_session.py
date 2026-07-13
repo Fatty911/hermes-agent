@@ -40,8 +40,17 @@ class RingBuffer:
 
 
 class PtySession:
-    def __init__(self, key: str, bridge, *, buffer_cap: int, read_timeout: float) -> None:
+    def __init__(
+        self,
+        key: str,
+        bridge,
+        *,
+        buffer_cap: int,
+        read_timeout: float,
+        identity: Optional[str] = None,
+    ) -> None:
         self.key = key
+        self.identity = identity
         self.bridge = bridge
         self.buffer = RingBuffer(buffer_cap)
         self.alive = True
@@ -105,6 +114,7 @@ class PtySession:
         self.last_detached_at = time.monotonic()
 
     async def close(self) -> None:
+        self.alive = False
         if self._drain_task is not None:
             self._drain_task.cancel()
             try:
@@ -117,6 +127,17 @@ class PtySession:
             await asyncio.to_thread(self.bridge.close)
         except Exception:
             pass
+
+    async def supersede(self) -> None:
+        ws = self._ws
+        self._ws = None
+        self.attached = False
+        if ws is not None:
+            try:
+                await ws.close(code=WS_CLOSE_SUPERSEDED)
+            except Exception:
+                pass
+        await self.close()
 
 
 from typing import Callable, Dict, Tuple
@@ -145,22 +166,41 @@ class PtySessionRegistry:
         self._read_timeout = read_timeout
         self._sessions: Dict[str, PtySession] = {}
 
-    async def attach_or_spawn(self, key: str, *, spawn: Callable[[], object]
-                              ) -> Tuple[PtySession, bool]:
+    async def attach_or_spawn(
+        self,
+        key: str,
+        *,
+        spawn: Callable[[], object],
+        identity: Optional[str] = None,
+        replace: bool = False,
+    ) -> Tuple[PtySession, bool]:
         await self.reap_idle()
         existing = self._sessions.get(key)
-        if existing is not None and existing.alive:
+        if (
+            existing is not None
+            and existing.alive
+            and not replace
+            and existing.identity == identity
+        ):
             return existing, False
-        if existing is not None:                       # dead remnant
-            await existing.close()
+        if existing is not None:
             self._sessions.pop(key, None)
+            if existing.alive:
+                await existing.supersede()
+            else:
+                await existing.close()
         if len(self._sessions) >= self._max:
             self._reap_one_idle_or_raise()
         # PTY spawn does blocking fork/exec work — keep it off the event
         # loop (#53227).
         bridge = await asyncio.to_thread(spawn)
-        session = PtySession(key, bridge, buffer_cap=self._buffer_cap,
-                             read_timeout=self._read_timeout)
+        session = PtySession(
+            key,
+            bridge,
+            buffer_cap=self._buffer_cap,
+            read_timeout=self._read_timeout,
+            identity=identity,
+        )
         await session.start()
         self._sessions[key] = session
         return session, True

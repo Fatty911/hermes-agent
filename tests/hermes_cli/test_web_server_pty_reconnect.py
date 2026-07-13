@@ -56,6 +56,106 @@ def _url(token: str, **params: str) -> str:
     return f"/api/pty?{urlencode({'token': token, **params})}"
 
 
+def test_keepalive_identity_uses_explicit_canonical_resume():
+    import hermes_cli.web_server as ws
+
+    env = {"HERMES_TUI_RESUME": "child-session"}
+    parent = ws._pty_keepalive_identity("parent-session", None, env)
+    child = ws._pty_keepalive_identity("child-session", None, env)
+
+    assert parent == child
+
+
+def test_keepalive_identity_keeps_implicit_reconnect_in_fresh_scope():
+    import hermes_cli.web_server as ws
+
+    env = {"HERMES_TUI_RESUME": "active-session"}
+
+    assert ws._pty_keepalive_identity(None, None, env).endswith("\0fresh")
+    assert ws._pty_keepalive_identity(None, "current", env) == ws._pty_keepalive_identity(
+        None, None, env
+    )
+
+
+def test_keepalive_attach_switches_from_hidden_fresh_to_explicit_resume(
+    pty_client, monkeypatch
+):
+    """One browser attach token must not pin chat to its hidden fresh PTY."""
+    import threading
+
+    ws, client, token = pty_client
+    bridges = []
+    resolved_resumes = []
+
+    class _PersistentBridge:
+        def __init__(self, number):
+            self.number = number
+            self._sent = False
+            self._closed = threading.Event()
+
+        @classmethod
+        def spawn(cls, *args, **kwargs):
+            bridge = cls(len(bridges) + 1)
+            bridges.append(bridge)
+            return bridge
+
+        def read(self, timeout):
+            if not self._sent:
+                self._sent = True
+                return f"ready-{self.number}".encode()
+            return None if self._closed.wait(timeout) else b""
+
+        def resize(self, *, cols, rows):
+            pass
+
+        def write(self, raw):
+            pass
+
+        def close(self):
+            self._closed.set()
+
+        @property
+        def closed(self):
+            return self._closed.is_set()
+
+    def fake_resolve(resume=None, **kwargs):
+        resolved_resumes.append(resume)
+        env = {"HERMES_TUI_RESUME": resume} if resume else {}
+        return (["fake-hermes-tui"], None, env)
+
+    registry = ws.PtySessionRegistry(
+        ttl=30,
+        max_sessions=4,
+        buffer_cap=1024,
+        read_timeout=0.01,
+    )
+    monkeypatch.setattr(ws, "PTY_REGISTRY", registry)
+    monkeypatch.setattr(ws.PtyBridge, "spawn", _PersistentBridge.spawn)
+    monkeypatch.setattr(ws, "_resolve_chat_argv", fake_resolve)
+
+    attach = "same-browser-token"
+    with client:
+        with client.websocket_connect(
+            _url(token, channel="hidden-fresh", attach=attach)
+        ) as conn:
+            assert conn.receive_bytes() == b"ready-1"
+
+        with client.websocket_connect(
+            _url(
+                token,
+                channel="selected-session",
+                attach=attach,
+                resume="session-a",
+            )
+        ) as conn:
+            assert conn.receive_bytes() == b"ready-2"
+            assert bridges[0].closed is True
+            assert bridges[1].closed is False
+
+    assert resolved_resumes == [None, "session-a"]
+    assert len(bridges) == 2
+
+
 def test_resolve_chat_argv_sets_active_session_file_env(monkeypatch):
     """Dashboard chat gives the TUI a breadcrumb file for reconnect resume."""
     import hermes_cli.main as main_mod

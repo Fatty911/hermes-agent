@@ -136,6 +136,40 @@ async def test_same_key_reattaches_same_session():
 
 
 @pytest.mark.asyncio
+async def test_same_key_replaces_session_when_identity_changes():
+    reg = make_registry()
+    b1 = FakeBridge([b"", b"", b""])
+    s1, _ = await reg.attach_or_spawn(
+        "tok", identity="fresh", spawn=lambda: b1
+    )
+    b2 = FakeBridge([b"", b"", b""])
+    s2, created = await reg.attach_or_spawn(
+        "tok", identity="resume:session-a", spawn=lambda: b2
+    )
+
+    assert created is True
+    assert s2 is not s1
+    assert b1.closed is True
+    assert s2.bridge is b2
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
+async def test_replace_forces_new_session_with_same_identity():
+    reg = make_registry()
+    b1 = FakeBridge([b"", b"", b""])
+    await reg.attach_or_spawn("tok", identity="fresh", spawn=lambda: b1)
+    b2 = FakeBridge([b"", b"", b""])
+    _session, created = await reg.attach_or_spawn(
+        "tok", identity="fresh", replace=True, spawn=lambda: b2
+    )
+
+    assert created is True
+    assert b1.closed is True
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
 async def test_reap_idle_closes_sessions_past_ttl():
     reg = make_registry(ttl=10.0)
     b = FakeBridge([b"", b""])

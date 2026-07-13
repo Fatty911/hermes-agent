@@ -14612,6 +14612,24 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
     """True when the WS-upgrade credential is accepted. See _ws_auth_reason."""
     return _ws_auth_reason(ws)[0] is None
 
+
+def _pty_keepalive_identity(
+    requested_resume: Optional[str],
+    profile: Optional[str],
+    env: Optional[dict],
+) -> str:
+    """Return the logical PTY target associated with an attach token."""
+    profile_scope = (profile or "").strip()
+    if profile_scope.lower() == "current":
+        profile_scope = ""
+
+    resolved_resume = requested_resume
+    if requested_resume and env:
+        resolved_resume = env.get("HERMES_TUI_RESUME") or requested_resume
+
+    target = f"resume:{resolved_resume}" if requested_resume else "fresh"
+    return f"{profile_scope}\0{target}"
+
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
 # the chat tab generates on mount; entries auto-evict when the last subscriber
@@ -15562,7 +15580,8 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     # --- spawn PTY ------------------------------------------------------
-    resume = ws.query_params.get("resume") or None
+    requested_resume = ws.query_params.get("resume") or None
+    resume = requested_resume
     profile = ws.query_params.get("profile") or None
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
@@ -15577,6 +15596,7 @@ async def pty_ws(ws: WebSocket) -> None:
     if channel:
         active_session_file = _active_session_file_for_channel(ws.app, channel)
         if force_fresh:
+            requested_resume = None
             resume = None
             _forget_active_session_file(active_session_file)
         elif not resume:
@@ -15605,6 +15625,11 @@ async def pty_ws(ws: WebSocket) -> None:
 
 
     attach_token = ws.query_params.get("attach") or None
+    keepalive_identity = _pty_keepalive_identity(
+        requested_resume,
+        profile,
+        env,
+    )
 
     def _spawn():
         return PtyBridge.spawn(argv, cwd=cwd, env=env)
@@ -15627,7 +15652,10 @@ async def pty_ws(ws: WebSocket) -> None:
     # Keep-alive path: the PTY outlives this socket; reattach by token.
     try:
         session, _created = await PTY_REGISTRY.attach_or_spawn(
-            attach_token, spawn=_spawn
+            attach_token,
+            spawn=_spawn,
+            identity=keepalive_identity,
+            replace=force_fresh,
         )
     except PtyUnavailableError as exc:
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
