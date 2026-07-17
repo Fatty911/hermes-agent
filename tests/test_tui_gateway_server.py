@@ -1392,7 +1392,7 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         def reopen_session(self, target):
             captured["reopened"] = target
 
-        def get_messages_as_conversation(self, target, include_ancestors=False):
+        def get_messages_as_conversation(self, target, include_ancestors=False, repair_alternation=False):
             captured.setdefault("history_calls", []).append((target, include_ancestors))
             return (
                 [
@@ -1528,7 +1528,7 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
         def reopen_session(self, target):
             pass
 
-        def get_messages_as_conversation(self, target, include_ancestors=False):
+        def get_messages_as_conversation(self, target, include_ancestors=False, repair_alternation=False):
             return [{"role": "user", "content": "hello"}]
 
     def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
@@ -1588,7 +1588,7 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
         def reopen_session(self, _target):
             captured["reopened"] = _target
 
-        def get_messages_as_conversation(self, _target, include_ancestors=False):
+        def get_messages_as_conversation(self, _target, include_ancestors=False, repair_alternation=False):
             return [{"role": "user", "content": "hello"}]
 
         def update_session_cwd(self, *_args):
@@ -3897,7 +3897,12 @@ def test_config_set_yolo_global_scope_honors_explicit_value(tmp_path, monkeypatc
     assert yaml.safe_load(cfg_path.read_text())["approvals"]["mode"] == "off"
 
 
-def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
+def test_config_set_fast_updates_live_agent_session_scoped(monkeypatch):
+    """A session-targeted fast toggle updates the live agent + pins the
+    per-session override, and NEVER writes global config — the desktop's
+    per-model presets call this on every model pick, and a global write
+    flipped the tier for every other session/profile (the "switch one
+    session, switches everywhere" class)."""
     writes = []
     emits = []
     agent = types.SimpleNamespace(
@@ -3905,7 +3910,8 @@ def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
         request_overrides={"foo": "bar", "speed": "slow"},
         service_tier=None,
     )
-    server._sessions["sid"] = _session(agent=agent)
+    session = _session(agent=agent)
+    server._sessions["sid"] = session
 
     monkeypatch.setattr(
         server, "_write_config_key", lambda path, value: writes.append((path, value))
@@ -3931,7 +3937,8 @@ def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
             "foo": "bar",
             "service_tier": "priority",
         }
-        assert ("agent.service_tier", "fast") in writes
+        assert session["create_service_tier_override"] == "priority"
+        assert writes == []
         assert ("session.info", "sid", {"model": "x"}) in emits
 
         resp_normal = server.handle_request(
@@ -3944,7 +3951,10 @@ def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
         assert resp_normal["result"]["value"] == "normal"
         assert agent.service_tier is None
         assert agent.request_overrides == {"foo": "bar"}
-        assert ("agent.service_tier", "normal") in writes
+        # "" (not absent) so a rebuild pins normal instead of falling back to
+        # the global default.
+        assert session["create_service_tier_override"] == ""
+        assert writes == []
     finally:
         server._sessions.pop("sid", None)
 
@@ -5262,7 +5272,7 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
                 "pinned": True,
             }
 
-        def get_messages_as_conversation(self, key, include_ancestors=True):
+        def get_messages_as_conversation(self, key, include_ancestors=True, repair_alternation=False):
             assert key == "session-key"
             assert include_ancestors is True
             return list(history_from_db)

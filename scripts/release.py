@@ -59,6 +59,7 @@ AUTHOR_MAP = {
     "RainbowAndSun@users.noreply.github.com": "RainbowAndSun",  # PR #62982 salvage (honcho: observer target in prefetch context)
     "pi@hermes.local": "Elektrofussel",  # PR #61675 salvage (honcho: defaultHost + private-range local URL detection)
     "doogie@spark.local": "SAMBAS123",  # PR #64986 salvage (gateway: multiplex primary bot token scope)
+    "maartendormenatteysen@hotmail.com": "MaartenDMT",  # PR #65637 salvage (gateway: retry failed transcript appends and rebuild corrupted FTS)
     "emrekoca2003@gmail.com": "kocaemre",  # PR #36051 salvage (docs: audit round 3 code/doc reconciliation)
     "focusedmiqa@gmail.com": "m1qaweb",  # PR #29290 salvage (gateway: strip /queue prefix when idle)
     "13574+otsune@users.noreply.github.com": "otsune",  # PR #36019 salvage (kanban: attachment toolset + CLI)
@@ -370,6 +371,8 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "krowd3v@users.noreply.github.com": "krowd3v",
+    "dfein38347g@users.noreply.github.com": "dfein38347g",
     "s96919@gmail.com": "s96919",
     "rasitakyol@hotmail.com": "rasitakyol",
     "thatgfsj@gmail.com": "Thatgfsj",
