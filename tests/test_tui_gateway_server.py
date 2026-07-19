@@ -5182,6 +5182,170 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
         server._sessions.clear()
 
 
+def test_config_set_model_once_keeps_env_and_records_restore(monkeypatch):
+    class Agent:
+        model = "old/model"
+        provider = "openrouter"
+        base_url = "https://openrouter.ai/api/v1"
+        api_key = "sk-old"
+        api_mode = "chat_completions"
+
+        def switch_model(self, **kwargs):
+            self.model = kwargs["new_model"]
+            self.provider = kwargs["new_provider"]
+            self.api_key = kwargs["api_key"]
+            self.base_url = kwargs["base_url"]
+            self.api_mode = kwargs["api_mode"]
+
+    result = types.SimpleNamespace(
+        success=True,
+        new_model="claude-sonnet-4.6",
+        target_provider="anthropic",
+        api_key="sk-ant",
+        base_url="https://api.anthropic.com",
+        api_mode="anthropic_messages",
+        warning_message="",
+    )
+    seen = {}
+    agent = Agent()
+    session = _session(agent=agent)
+    server._sessions["sid"] = session
+    monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openrouter")
+    monkeypatch.setenv("HERMES_MODEL", "old/model")
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **kwargs: seen.update(kwargs) or result,
+    )
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "claude-sonnet-4.6 --provider anthropic --once",
+                },
+            }
+        )
+
+        assert resp["result"]["scope"] == "once"
+        assert seen["is_global"] is False
+        assert agent.model == "claude-sonnet-4.6"
+        assert session["one_turn_model_restore"]["model"] == "old/model"
+        assert os.environ["HERMES_INFERENCE_PROVIDER"] == "openrouter"
+        assert os.environ["HERMES_MODEL"] == "old/model"
+    finally:
+        server._sessions.clear()
+
+
+def test_config_set_model_once_requires_live_session(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model",
+        lambda **_: (_ for _ in ()).throw(AssertionError("switch should not run")),
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "key": "model",
+                "value": "claude-sonnet-4.6 --provider anthropic --once",
+            },
+        }
+    )
+
+    assert resp["error"]["code"] == 5001
+    assert "/model --once requires a live session" in resp["error"]["message"]
+
+
+def test_config_set_model_session_switch_clears_pending_once_restore(monkeypatch):
+    class Agent:
+        model = "temp/model"
+        provider = "anthropic"
+        base_url = "https://api.anthropic.com"
+        api_key = "sk-temp"
+        api_mode = "anthropic_messages"
+
+        def switch_model(self, **kwargs):
+            self.model = kwargs["new_model"]
+            self.provider = kwargs["new_provider"]
+            self.api_key = kwargs["api_key"]
+            self.base_url = kwargs["base_url"]
+            self.api_mode = kwargs["api_mode"]
+
+    result = types.SimpleNamespace(
+        success=True,
+        new_model="new/model",
+        target_provider="openrouter",
+        api_key="sk-new",
+        base_url="https://openrouter.ai/api/v1",
+        api_mode="chat_completions",
+        warning_message="",
+    )
+    session = _session(agent=Agent())
+    session["one_turn_model_restore"] = {"model": "old/model"}
+    server._sessions["sid"] = session
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kwargs: result)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "new/model --provider openrouter --session",
+                },
+            }
+        )
+
+        assert resp["result"]["scope"] == "session"
+        assert "one_turn_model_restore" not in session
+    finally:
+        server._sessions.clear()
+
+
+def test_restore_agent_model_runtime_falls_back_to_switch_model():
+    class Agent:
+        model = "temp/model"
+        provider = "anthropic"
+        base_url = "https://api.anthropic.com"
+        api_key = "sk-temp"
+        api_mode = "anthropic_messages"
+
+        def switch_model(self, **kwargs):
+            self.model = kwargs["new_model"]
+            self.provider = kwargs["new_provider"]
+            self.api_key = kwargs["api_key"]
+            self.base_url = kwargs["base_url"]
+            self.api_mode = kwargs["api_mode"]
+
+    agent = Agent()
+
+    server._restore_agent_model_runtime(
+        agent,
+        {
+            "model": "old/model",
+            "provider": "openrouter",
+            "api_key": "sk-old",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+
+    assert agent.model == "old/model"
+    assert agent.provider == "openrouter"
+    assert agent.base_url == "https://openrouter.ai/api/v1"
+
+
 def test_config_set_personality_rejects_unknown_name(monkeypatch):
     monkeypatch.setattr(
         server,
@@ -7976,6 +8140,46 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
         server._sessions.pop("sid-live", None)
 
 
+def test_session_activate_returns_prompt_queued_during_busy_turn(monkeypatch):
+    """A full client restart must recover an accepted next-turn prompt.
+
+    Busy prompts are intentionally not durable until they drain. Their only
+    authoritative copy is ``queued_prompt``, so the live projection must expose
+    that copy without leaking the transport object.
+    """
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "queue")
+    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
+    agent = types.SimpleNamespace(model="model-live")
+    session = _session(
+        agent=agent,
+        running=True,
+        inflight_turn={
+            "assistant": "partial answer",
+            "streaming": True,
+            "user": "current prompt",
+        },
+    )
+    server._sessions["sid-live"] = session
+    try:
+        queued = server._handle_busy_submit(
+            "submit", "sid-live", session, "newest prompt", object()
+        )
+        assert queued["result"]["status"] == "queued"
+
+        activated = server.handle_request(
+            {
+                "id": "activate",
+                "method": "session.activate",
+                "params": {"session_id": "sid-live"},
+            }
+        )
+
+        assert activated["result"]["queued"] == {"user": "newest prompt"}
+        assert "transport" not in activated["result"]["queued"]
+    finally:
+        server._sessions.pop("sid-live", None)
+
+
 def test_session_activate_switches_live_session_without_closing_siblings(monkeypatch):
     monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
     server._sessions["sid-a"] = _session(
@@ -8302,6 +8506,7 @@ def test_browser_manage_connect_defaults_to_loopback(monkeypatch):
 
 def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
     emitted: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         server,
