@@ -1469,8 +1469,17 @@ DEFAULT_CONFIG = {
                                       # floored at 0.75 (raise-only) so compaction
                                       # doesn't fire with half the window still free;
                                       # set this above 0.75 to override the floor.
+        "threshold_tokens": None,     # absolute token cap — when set, compression
+                                      # triggers at the lower of the ratio-based
+                                      # threshold and this token count. Clamped to
+                                      # the model's context length at apply-time.
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
+        "max_attempts": 3,            # compression retry rounds before a turn gives up
+                                      # with "max compression attempts reached". Raise
+                                      # (e.g. 6) for tool-schema-heavy sessions where 3
+                                      # rounds cannot clear the request estimate.
+                                      # Validated >= 1, hard-capped at 10.
         "hygiene_hard_message_limit": 5000,  # gateway session-hygiene force-compress threshold by message count
         "protect_first_n": 3,         # non-system head messages always preserved
                                       # verbatim, in ADDITION to the system prompt
@@ -1529,6 +1538,32 @@ DEFAULT_CONFIG = {
                                       # session_search and recoverable, not deleted.
                                       # Default False during rollout; will flip on
                                       # after live validation.
+        "model_thresholds": {},       # Per-model threshold overrides. Keys are
+                                      # substring-matched against the model name
+                                      # (longest match wins); values replace the
+                                      # global `threshold` for that model, e.g.
+                                      #   model_thresholds:
+                                      #     "glm-5.2": 0.40
+                                      #     "claude-sonnet": 0.35
+                                      # The small-context floor (0.75 for <512K
+                                      # models) still applies on top of overrides
+                                      # (raise-only: an override above the floor
+                                      # wins; one below it is raised to the floor).
+        "idle_compact_after_seconds": 0,  # Opt-in idle compaction (0 = disabled).
+                                      # When > 0, a session that resumes after at
+                                      # least this many seconds of inactivity
+                                      # compacts its accumulated history up front,
+                                      # before the first reply — so a long-lived
+                                      # thread resumed hours later doesn't re-read
+                                      # its full stale context on every turn.
+                                      # Time-based; complements (does not replace)
+                                      # the size-based `threshold` above. Skipped
+                                      # when the context is already at/below the
+                                      # post-compression target (threshold ×
+                                      # target_ratio) and it honors the same
+                                      # failure-cooldown / anti-thrash / per-session
+                                      # lock guards as every automatic compaction.
+                                      # Example: 1800 = compact after 30 min idle.
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).
@@ -3233,6 +3268,20 @@ DEFAULT_CONFIG = {
         #     enforcement is a copy/gating change, not new migration code.
         #   "off": suppress the notice entirely.
         "fts_optimize_notice": "advise",
+        # CJK-bigram search index (messages_fts_cjk, cjk_unicode61 loadable
+        # tokenizer). When the extension is built (native/fts5_cjk/build.sh →
+        # ~/.hermes/lib/libfts5_cjk.so), 1-2 char CJK terms (일본, 项目, ...)
+        # get index-speed exact matching instead of LIKE full-table scans.
+        # True (default): use the index when the extension is present; the
+        # setting is inert when it isn't. False: never load the extension or
+        # serve the cjk index. Bridged to HERMES_CJK_FTS (internal carrier).
+        "cjk_fts": True,
+        # Slow session-search log threshold in milliseconds: searches at or
+        # above it log one INFO line with the routing path taken (fts_cjk /
+        # fts5 / trigram / like_scan) so latency regressions stay
+        # attributable per query shape. 0 logs every search. Bridged to
+        # HERMES_SEARCH_SLOW_MS (internal carrier).
+        "search_slow_ms": 1000,
     },
 
     # Contextual first-touch onboarding hints (see agent/onboarding.py).
@@ -8532,6 +8581,14 @@ def show_config():
     print(f"  Enabled:      {'yes' if enabled else 'no'}")
     if enabled:
         print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
+        _tt = compression.get('threshold_tokens')
+        if _tt is not None:
+            try:
+                _tt = int(_tt)
+                if _tt > 0:
+                    print(f"  Token cap:    {_tt:,} tokens (takes lower of ratio vs absolute)")
+            except (TypeError, ValueError):
+                pass
         print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
         print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
         print(f"  Protect first: {compression.get('protect_first_n', 3)} non-system head messages")

@@ -2067,7 +2067,15 @@ def _persist_branch_seed(session: dict) -> None:
             return
         try:
             for msg in seed:
-                db.append_message(session_id=key, role=msg.get("role", "user"), content=msg.get("content"))
+                db.append_message(
+                    session_id=key,
+                    role=msg.get("role", "user"),
+                    content=msg.get("content"),
+                    # Preserve the parent's original message timestamps —
+                    # append_message would otherwise stamp time.time() and the
+                    # branch's copied history would all appear authored "now".
+                    timestamp=msg.get("timestamp"),
+                )
             session["_branch_seed_persisted"] = True
         except Exception:
             logger.debug("branch seed persist failed", exc_info=True)
@@ -3553,6 +3561,9 @@ def _compress_session_history(
     before_messages: list | None = None,
     history_version: int | None = None,
 ) -> tuple[int, dict]:
+    from agent.conversation_compression import (
+        finalize_context_engine_compression_notification,
+    )
     from agent.model_metadata import estimate_request_tokens_rough
 
     agent = session["agent"]
@@ -3581,16 +3592,28 @@ def _compress_session_history(
     # cached prompt (which already contains the agent identity block)
     # makes the rebuild append the identity a second time. Mirrors the
     # CLI's _manual_compress fix for issue #15281.
-    compressed, _ = agent._compress_context(
-        history,
-        None,
-        approx_tokens=approx_tokens,
-        focus_topic=focus_topic or None,
-    )
+    try:
+        compressed, _ = agent._compress_context(
+            history,
+            None,
+            approx_tokens=approx_tokens,
+            focus_topic=focus_topic or None,
+            defer_context_engine_notification=True,
+        )
+    except Exception:
+        finalize_context_engine_compression_notification(
+            agent,
+            committed=False,
+        )
+        raise
     with session["history_lock"]:
         if int(session.get("history_version", 0)) != history_version:
             # External mutation during compaction — drop the compressed
             # result so we don't clobber concurrent edits.
+            finalize_context_engine_compression_notification(
+                agent,
+                committed=False,
+            )
             usage = _get_usage(agent)
             return 0, usage
         session["history"] = compressed
@@ -5530,6 +5553,38 @@ def _coerce_message_text(content: Any) -> str:
     return str(content)
 
 
+_TEXT_ONLY_BUSY_PART_KINDS = frozenset({"text", "input_text", "output_text"})
+
+
+def _is_text_only_busy_payload(content: Any) -> bool:
+    """True when a busy submit carries only plain text, not attachments/media."""
+    if content is None:
+        return False
+    if isinstance(content, (str, int, float)):
+        return True
+    if isinstance(content, list):
+        if not content:
+            return False
+        for part in content:
+            if isinstance(part, str):
+                continue
+            if not isinstance(part, dict):
+                return False
+            kind = part.get("type")
+            if kind in _TEXT_ONLY_BUSY_PART_KINDS:
+                continue
+            if kind is None and isinstance(part.get("text"), str):
+                continue
+            return False
+        return True
+    if isinstance(content, dict):
+        kind = content.get("type")
+        if kind in _TEXT_ONLY_BUSY_PART_KINDS:
+            return True
+        return kind is None and isinstance(content.get("text"), str)
+    return False
+
+
 def _history_to_messages(history: list[dict]) -> list[dict]:
     messages = []
     tool_call_args = {}
@@ -5738,15 +5793,13 @@ def _handle_busy_submit(
     a turn is in flight, instead of rejecting it with ``session busy``.
 
     The old rejection forced clients into a deadline-bounded busy-retry that
-    silently dropped the send when turn teardown outlived the deadline (e.g. a
-    slow, non-interruptible tool like ``web_search`` running when the user hits
-    stop). The message is instead queued to run as the next turn — and, for the
-    default ``interrupt`` policy, the live turn is interrupted so it winds down
-    promptly. Drained in ``run``'s tail (see ``_run_prompt_submit``).
+    silently dropped the send when turn teardown outlived the deadline. The
+    default policy now redirects a capable core agent in place; older agents
+    retain the proven interrupt-and-queue path drained from ``run``'s tail.
 
-    Modes: ``interrupt`` (default) → interrupt + queue; ``queue`` → queue
-    without interrupting; ``steer`` → inject into the live turn if accepted,
-    else queue.
+    Modes: ``interrupt`` (default) → redirect the live turn, falling back to
+    hard interrupt + queue for older agents; ``queue`` → queue without
+    interrupting; ``steer`` → inject after the current atomic action.
     """
     mode = _load_busy_input_mode()
     agent = session.get("agent")
@@ -5755,14 +5808,34 @@ def _handle_busy_submit(
             # The turn ended between prompt.submit's first busy check and this
             # helper. Let the caller retry and claim the now-idle session.
             return None
-    if mode == "steer" and agent is not None and hasattr(agent, "steer"):
+    text_only = _is_text_only_busy_payload(text)
+    plain_text = _coerce_message_text(text).strip() if text_only else ""
+    if mode == "steer" and text_only and plain_text and agent is not None and hasattr(agent, "steer"):
         try:
-            if agent.steer(text):
+            if agent.steer(plain_text):
                 with session["history_lock"]:
                     session["last_active"] = time.time()
                 return _ok(rid, {"status": "steered"})
         except Exception:
             pass  # fall through to queue
+    # Text-only corrections redirect the live turn in place when the runtime
+    # supports it; media/attachment payloads and older agents fall through to
+    # the proven interrupt + queue path below.
+    if (
+        mode == "interrupt"
+        and text_only
+        and plain_text
+        and agent is not None
+        and getattr(agent, "_supports_active_turn_redirect", False) is True
+        and hasattr(agent, "redirect")
+    ):
+        try:
+            if agent.redirect(plain_text):
+                with session["history_lock"]:
+                    session["last_active"] = time.time()
+                return _ok(rid, {"status": "redirected"})
+        except Exception:
+            pass  # preserve the proven interrupt + queue fallback below
     # Queue before asking the live turn to stop. In particular, never call a
     # provider or compute-host method while holding history_lock: an interrupt
     # can wait behind the very operation it is trying to cancel.
@@ -8992,6 +9065,10 @@ def _(rid, params: dict) -> dict:
         return _err(
             rid, 4009, "session busy — /interrupt the current turn before /compress"
         )
+    from agent.conversation_compression import (
+        finalize_context_engine_compression_notification,
+    )
+
     sid = params.get("session_id", "")
     focus_topic = str(params.get("focus_topic", "") or "").strip()
     try:
@@ -9059,6 +9136,10 @@ def _(rid, params: dict) -> dict:
             )
             info = _session_info(agent, session)
             _emit("session.info", sid, info)
+            finalize_context_engine_compression_notification(
+                agent,
+                committed=True,
+            )
             return _ok(
                 rid,
                 {
@@ -9080,6 +9161,10 @@ def _(rid, params: dict) -> dict:
             # no-op, or raised.
             _status_update(sid, "ready")
     except Exception as e:
+        finalize_context_engine_compression_notification(
+            session["agent"],
+            committed=False,
+        )
         return _err(rid, 5005, str(e))
 
 
@@ -9200,6 +9285,7 @@ def _(rid, params: dict) -> dict:
                 session_id=new_key,
                 role=msg.get("role", "user"),
                 content=msg.get("content"),
+                timestamp=msg.get("timestamp"),
             )
         db.set_session_title(new_key, title)
     except Exception as e:
@@ -9547,6 +9633,43 @@ def _(rid, params: dict) -> dict:
     except Exception as exc:
         return _err(rid, 5000, f"steer failed: {exc}")
     return _ok(rid, {"status": "queued" if accepted else "rejected", "text": text})
+
+
+@method("session.redirect")
+def _(rid, params: dict) -> dict:
+    """Redirect the active model turn while preserving valid work/context."""
+    text = (params.get("text") or "").strip()
+    if not text:
+        return _err(rid, 4002, "text is required")
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    agent = session.get("agent")
+    # Turn-build window: a fresh turn flips running=True and kicks off an async
+    # agent build, so session["agent"] is briefly None. That is not an
+    # unsupported runtime — queue the correction server-side so it reaches the
+    # model as the next turn, instead of a misleading 4010 the client silently
+    # swallows into a lost follow-up.
+    if agent is None and session.get("running"):
+        _enqueue_prompt(session, text, current_transport() or _stdio_transport)
+        session["last_active"] = time.time()
+        return _ok(rid, {"status": "queued", "text": text})
+    if (
+        agent is None
+        or getattr(agent, "_supports_active_turn_redirect", False) is not True
+        or not hasattr(agent, "redirect")
+    ):
+        return _err(rid, 4010, "agent does not support active-turn redirect")
+    try:
+        accepted = agent.redirect(text)
+    except Exception as exc:
+        return _err(rid, 5000, f"redirect failed: {exc}")
+    if accepted:
+        session["last_active"] = time.time()
+    return _ok(
+        rid,
+        {"status": "redirected" if accepted else "rejected", "text": text},
+    )
 
 
 @method("terminal.resize")
@@ -10072,9 +10195,32 @@ def _wire_agent_terminal_output() -> None:
         process_registry.on_close = _emit_agent_terminal_close
 
 
+_desktop_ui_wired = False
+
+
+def _wire_desktop_ui() -> None:
+    """Bridge desktop-only tools (open_preview, focus_pane) to renderer events.
+
+    Idempotent. The tool hands back the turn's ``HERMES_UI_SESSION_ID`` as
+    ``sid`` so the event routes to the window that asked (``_emit`` /
+    ``write_json`` is ``_stdout_lock``-guarded, so calling it from the tool's
+    thread is safe)."""
+    global _desktop_ui_wired
+    if _desktop_ui_wired:
+        return
+    try:
+        from tools import desktop_ui
+    except Exception:
+        return
+
+    desktop_ui.set_emitter(lambda sid, event, payload: _emit(event, sid, payload))
+    _desktop_ui_wired = True
+
+
 def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     """Start the background notification poller for a TUI session."""
     _wire_agent_terminal_output()
+    _wire_desktop_ui()
     stop = threading.Event()
     t = threading.Thread(
         target=_notification_poller_loop,
@@ -11946,7 +12092,7 @@ def _(rid, params: dict) -> dict:
         )
         return _ok(rid, {"key": key, "value": nv})
 
-    if key == "compact":
+    if key == "density":
         raw = str(value or "").strip().lower()
         cfg0 = _load_cfg()
         d0 = cfg0.get("display") if isinstance(cfg0.get("display"), dict) else {}
@@ -11958,7 +12104,7 @@ def _(rid, params: dict) -> dict:
         elif raw == "off":
             nv_b = False
         else:
-            return _err(rid, 4002, f"unknown compact value: {value}")
+            return _err(rid, 4002, f"unknown density value: {value}")
         _write_config_key("display.tui_compact", nv_b)
         return _ok(rid, {"key": key, "value": "on" if nv_b else "off"})
 
@@ -12828,7 +12974,7 @@ def _(rid, params: dict) -> dict:
             )
             nv = "full" if dm == "expanded" else "collapsed"
         return _ok(rid, {"value": nv})
-    if key == "compact":
+    if key == "density":
         on = bool((_load_cfg().get("display") or {}).get("tui_compact", False))
         return _ok(rid, {"value": "on" if on else "off"})
     if key == "theme":
@@ -13273,7 +13419,7 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
 )
 
 _TUI_EXTRA: list[tuple[str, str, str]] = [
-    ("/compact", "Toggle compact display mode", "TUI"),
+    ("/density", "Toggle compact display mode", "TUI"),
     ("/logs", "Show recent gateway log lines", "TUI"),
     (
         "/mouse",
@@ -13342,6 +13488,13 @@ def _(rid, params: dict) -> dict:
             cat_map[cat].append([c, desc])
 
         for name, desc, cat in _TUI_EXTRA:
+            # Dedup guard: skip TUI extras that collide with a registry
+            # command or one of its aliases (e.g. the historical /compact
+            # collision, #57133, or /sessions which the registry also
+            # advertises). The registry entry is canonical.
+            if name.lower() in canon:
+                continue
+            canon[name.lower()] = name
             all_pairs.append([name, desc])
             if cat not in cat_map:
                 cat_map[cat] = []
@@ -13943,6 +14096,10 @@ def _(rid, params: dict) -> dict:
             return _err(
                 rid, 4009, "session busy — /interrupt the current turn before /compress"
             )
+        from agent.conversation_compression import (
+            finalize_context_engine_compression_notification,
+        )
+
         sid = params.get("session_id", "")
         if _session_uses_compute_host(session):
             command = f"/{name}" + (f" {arg}" if arg else "")
@@ -14016,6 +14173,10 @@ def _(rid, params: dict) -> dict:
                 compression_state=getattr(_agent, "context_compressor", None),
             )
             _emit("session.info", sid, _session_info(session.get("agent"), session))
+            finalize_context_engine_compression_notification(
+                _agent,
+                committed=True,
+            )
             return _ok(
                 rid,
                 {
@@ -14026,6 +14187,10 @@ def _(rid, params: dict) -> dict:
                 },
             )
         except Exception as exc:
+            finalize_context_engine_compression_notification(
+                session["agent"],
+                committed=False,
+            )
             return _err(rid, 5009, f"compress failed: {exc}")
 
     return _err(rid, 4018, f"not a quick/plugin/bundle/skill command: {name}")
@@ -14498,8 +14663,8 @@ def _(rid, params: dict) -> dict:
         text_lower = text.lower()
         extras = [
             {
-                "text": "/compact",
-                "display": "/compact",
+                "text": "/density",
+                "display": "/density",
                 "meta": "Toggle compact display mode",
             },
             {
@@ -14542,10 +14707,42 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5020, str(e))
 
 
+def _model_picker_context(agent):
+    """Layer live session state onto config without losing custom identity."""
+    from hermes_cli.inventory import load_picker_context
+
+    ctx = load_picker_context()
+    provider = getattr(agent, "provider", "") if agent else ""
+    base_url = getattr(agent, "base_url", "") if agent else ""
+    if str(provider or "").strip().lower() == "custom":
+        try:
+            from hermes_cli.runtime_provider import canonical_custom_identity
+
+            provider = (
+                canonical_custom_identity(
+                    base_url=base_url or None,
+                    config_provider=ctx.current_provider,
+                )
+                or provider
+            )
+        except Exception:
+            logger.debug(
+                "custom provider identity recovery failed (model picker)",
+                exc_info=True,
+            )
+
+    return ctx.with_overrides(
+        current_provider=provider,
+        current_model=(getattr(agent, "model", "") if agent else "")
+        or _resolve_model(),
+        current_base_url=base_url,
+    )
+
+
 @method("model.options")
 def _(rid, params: dict) -> dict:
     try:
-        from hermes_cli.inventory import build_models_payload, load_picker_context
+        from hermes_cli.inventory import build_models_payload
 
         session = _sessions.get(params.get("session_id", ""))
         agent = session.get("agent") if session else None
@@ -14553,13 +14750,7 @@ def _(rid, params: dict) -> dict:
         # is spawned, IT owns the live provider/model/base_url. Empty
         # agent attributes must NOT clobber disk config (with_overrides
         # is truthy-only).
-        ctx = load_picker_context().with_overrides(
-            current_provider=getattr(agent, "provider", "") if agent else "",
-            current_model=(
-                (getattr(agent, "model", "") if agent else "") or _resolve_model()
-            ),
-            current_base_url=getattr(agent, "base_url", "") if agent else "",
-        )
+        ctx = _model_picker_context(agent)
         # picker_hints + canonical_order produce the TUI/desktop picker shape:
         # `authenticated`/`auth_type`/`key_env`/`warning` per row, in
         # CANONICAL_PROVIDERS declaration order. Desktop pickers default to the
@@ -14599,7 +14790,7 @@ def _(rid, params: dict) -> dict:
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
         from hermes_cli.config import is_managed
-        from hermes_cli.inventory import build_models_payload, load_picker_context
+        from hermes_cli.inventory import build_models_payload
 
         slug = (params.get("slug") or "").strip()
         api_key = (params.get("api_key") or "").strip()
@@ -14640,13 +14831,7 @@ def _(rid, params: dict) -> dict:
         # carries `authenticated` for the TUI frontend.
         session = _sessions.get(params.get("session_id", ""))
         agent = session.get("agent") if session else None
-        ctx = load_picker_context().with_overrides(
-            current_provider=getattr(agent, "provider", "") if agent else "",
-            current_model=(
-                (getattr(agent, "model", "") if agent else "") or _resolve_model()
-            ),
-            current_base_url=getattr(agent, "base_url", "") if agent else "",
-        )
+        ctx = _model_picker_context(agent)
         payload = build_models_payload(
             ctx, picker_hints=True, max_models=50,
         )
@@ -14986,6 +15171,13 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         (parts[1].strip() if len(parts) > 1 else ""),
         session.get("agent"),
     )
+    if name == "compact":
+        # /compact is an alias of /compress in every host. The compute-host
+        # slash.compress control forwards the user's raw alias verbatim, so
+        # without normalizing here the child mirror silently no-ops — the
+        # session never compresses and the deferred context-engine
+        # notification wiring below is never exercised for that route.
+        name = "compress"
 
     # Reject agent-mutating commands during an in-flight turn.  These
     # all do read-then-mutate on live agent/session state that the
@@ -15031,6 +15223,9 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             # while CLI and gateway both did.
             from agent.manual_compression_feedback import summarize_manual_compression
             from agent.model_metadata import estimate_request_tokens_rough
+            from agent.conversation_compression import (
+                finalize_context_engine_compression_notification,
+            )
 
             with session["history_lock"]:
                 _before_messages = list(session.get("history", []))
@@ -15070,6 +15265,10 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             _lines = [_fb["headline"], _fb["token_line"]]
             if _fb.get("note"):
                 _lines.append(_fb["note"])
+            finalize_context_engine_compression_notification(
+                agent,
+                committed=True,
+            )
             return "\n".join(_lines)
         elif name == "fast" and agent:
             mode = arg.lower()
@@ -15085,6 +15284,15 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
 
             process_registry.kill_all()
     except Exception as e:
+        if name == "compress" and agent:
+            from agent.conversation_compression import (
+                finalize_context_engine_compression_notification,
+            )
+
+            finalize_context_engine_compression_notification(
+                agent,
+                committed=False,
+            )
         return f"live session sync failed: {e}"
     return ""
 
