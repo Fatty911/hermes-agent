@@ -94,6 +94,10 @@ export type GatewayEventPayload = {
   label?: string
   index?: number
   aggregator?: string
+  // moa.progress / moa.phase (Mixture of Agents fan-out progress relay)
+  refs_done?: number
+  refs_total?: number
+  phase?: string
   // message.complete — signals the final text was already previewed via
   // interim_assistant_callback, so the UI can settle instead of duplicating.
   response_previewed?: boolean
@@ -313,9 +317,11 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
   }
 
   if (message.display_kind === 'async_delegation_complete') {
-    const count = message.display_metadata && 'task_count' in message.display_metadata
-      ? message.display_metadata.task_count
-      : undefined
+    const count =
+      message.display_metadata && 'task_count' in message.display_metadata
+        ? message.display_metadata.task_count
+        : undefined
+
     return count === undefined
       ? 'background agent work finished'
       : `${count} background agent${count === 1 ? '' : 's'} finished`
@@ -905,14 +911,17 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     const content = message.content || message.text || message.context || message.name
+
     const displayContent = transcriptContent(
       message.display_kind,
       timelineDisplayContent(message, displayContentForMessage(message.role, content))
     )
+
     const displayRole =
       message.display_kind === 'model_switch' || message.display_kind === 'async_delegation_complete'
         ? 'system'
         : message.role
+
     const parts: ChatMessagePart[] = []
 
     const reasoning =
