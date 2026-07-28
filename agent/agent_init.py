@@ -33,7 +33,6 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 from agent.context_compressor import ContextCompressor
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import StreamingContextScrubber
-from agent.session_activity import ActivityProvenance
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     fetch_model_metadata,
@@ -868,11 +867,6 @@ def init_agent(
     # notifications to show progress.
     agent._last_activity_ts: float = time.time()
     agent._last_activity_desc: str = "initializing"
-    # Default / unmigrated paths and _touch_activity stamp unknown; named
-    # provenances are stamped by compression writers (heartbeat / timeout / cooldown).
-    agent._last_activity_provenance = ActivityProvenance.UNKNOWN
-    # Rate-limit durable SessionDB activity stamps from _touch_activity (#72016).
-    agent._session_activity_last_persist_mono: float = 0.0
     agent._current_tool: str | None = None
     agent._api_call_count: int = 0
     # Opt-out flag for the between-turns MCP tool refresh (build_turn_context).
@@ -963,12 +957,6 @@ def init_agent(
     agent._stream_writer_token = 0
     agent._stream_writer_tls = threading.local()
     agent._stream_writer_dropped = 0
-
-    # Displayed reasoning text streamed during the current model response,
-    # captured only when a surface consumed it via a reasoning callback. Used
-    # by active-turn redirect to checkpoint what the user actually saw without
-    # ever persisting hidden provider reasoning.
-    agent._current_streamed_reasoning_text = ""
 
     # Optional current-turn user-message override used when the API-facing
     # user message intentionally differs from the persisted transcript
@@ -1168,6 +1156,10 @@ def init_agent(
             elif base_url_host_matches(effective_base, "chatgpt.com"):
                 from agent.auxiliary_client import _codex_cloudflare_headers
                 client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
+            elif base_url_host_matches(effective_base, "x.ai"):
+                from tools.xai_http import hermes_xai_default_headers
+
+                client_kwargs["default_headers"] = hermes_xai_default_headers()
             elif "default_headers" not in client_kwargs:
                 # Fall back to profile.default_headers for providers that
                 # declare custom headers (e.g. Kimi User-Agent on non-kimi.com
