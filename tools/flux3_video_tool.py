@@ -179,6 +179,58 @@ _MEDIA_FIELDS = {
 _MAX_IMAGES = 10
 
 
+# How long one get_result call waits before its second look. The bound that
+# matters is the whole call rather than this number: model_tools' async bridge
+# abandons a tool at 300s, and one call spends two polls (each bounded
+# server-side at 45s), this wait, and on Ready the download of the clip. There
+# is room to roughly double this; the reason not to is that a finished job is
+# only noticed at the next look, so the wait is also the notice delay.
+_POLL_FOLLOW_UP_WAIT_SECONDS = 45.0
+# Taken in slices so the wait is answerable. Nothing outside a tool can end a
+# call that has already started — the executor only checks for an interrupt
+# between tools — so a tool that blocks this long has to watch the flag itself.
+_POLL_WAIT_SLICE_SECONDS = 1.0
+
+# Mirrors the gateway's BFL statuses
+_TERMINAL_POLL_STATUSES = frozenset(
+    {"Ready", "Error", "Request Moderated", "Content Moderated", "Task not found"}
+)
+
+
+def _poll_is_finished(raw: str) -> bool:
+    """True when there is nothing to wait for: done, refused, or unreadable."""
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return True
+    if not isinstance(payload, dict) or "error" in payload:
+        # A refusal carries its own guidance (a wait, a limit, a dead job).
+        # Sleeping on it would only delay showing the model what to do.
+        return True
+    details = payload.get("details")
+    status = details.get("status") if isinstance(details, dict) else None
+    return not isinstance(status, str) or status in _TERMINAL_POLL_STATUSES
+
+
+async def _wait_before_second_look() -> bool:
+    """Hold the call open between looks; False if the user interrupted.
+
+    Counted down rather than clock-driven: this paces polling, so a slice
+    that runs long changes nothing, and the loop stays testable without a
+    fake clock.
+    """
+    from tools.interrupt import is_interrupted
+
+    remaining = _POLL_FOLLOW_UP_WAIT_SECONDS
+    while remaining > 0:
+        if is_interrupted():
+            return False
+        this_slice = min(_POLL_WAIT_SLICE_SECONDS, remaining)
+        await asyncio.sleep(this_slice)
+        remaining -= this_slice
+    return True
+
+
 def _warm_nous_token() -> None:
     """Refresh the Nous token once, before any parallel upload needs it.
 
@@ -325,8 +377,27 @@ async def _save_if_ready(raw: str, save_to) -> str:
 
     details["saved_path"] = str(target)
     details["saved_bytes"] = size
-    payload["result"] = f"Saved to {target}. " + str(payload.get("result") or "")
+    payload["result"] = _delivery_lead_in(target) + str(payload.get("result") or "")
     return json.dumps(payload, ensure_ascii=False)
+
+
+def _delivery_lead_in(target) -> str:
+    """Opens the result text, ahead of the gateway's own delivery guidance.
+
+    On a messaging platform the tag is spelled out rather than described. The
+    model has to reproduce this path exactly or the file is not sent, and the
+    reply is published either way — the tag is stripped from the text whether
+    or not it named a real file, so a wrong path reads to the user as a
+    message that simply forgot the attachment. Handing over the finished line
+    removes the step where that goes wrong; only this side knows the path.
+    """
+    if _delivers_as_an_attachment():
+        return (
+            f"Saved to {target}. To deliver it, copy the next line into your reply exactly as "
+            f"written, alone on its own line, with nothing added around it:\n"
+            f"MEDIA:{target}\n"
+        )
+    return f"Saved to {target}. "
 
 
 async def _download_video(url: str, save_to) -> tuple:
@@ -376,6 +447,47 @@ def _filename_from_url(url: str) -> str:
     return name or "flux3-video.mp4"
 
 
+def _delivers_as_an_attachment() -> bool:
+    """True on a surface where the clip is received rather than opened off disk.
+
+    Deferred to the shared classifier so this tool cannot drift from the rest
+    of the codebase about what counts as a chat channel. It matters here that
+    the API server and webhooks are *not* one: they carry a platform value but
+    no attachment channel, and neither strips an unfulfilled MEDIA: tag out of
+    the reply, so treating them as messaging puts the literal tag in front of
+    the caller.
+    """
+    try:
+        from gateway.session_context import session_is_messaging_surface
+
+        return session_is_messaging_surface()
+    except Exception:
+        return False
+
+
+def _default_directory():
+    """Where a clip lands when the caller named no location.
+
+    On a messaging platform the user has no filesystem — the only way they
+    ever see the clip is as an attachment — so it goes to the gateway's own
+    video cache, which is an unconditionally allowed delivery root. Downloads
+    is not: an operator running HERMES_MEDIA_DELIVERY_STRICT=1 delivers only
+    from the cache roots, so a clip saved to Downloads there is dropped on the
+    way out and the user is shown a reply with nothing attached.
+    """
+    from pathlib import Path
+
+    if _delivers_as_an_attachment():
+        try:
+            from hermes_constants import get_hermes_dir
+
+            return get_hermes_dir("cache/videos", "video_cache")
+        except Exception:
+            logger.debug("Could not resolve the video cache dir; using Downloads", exc_info=True)
+    downloads = Path.home() / "Downloads"
+    return downloads if downloads.is_dir() else Path.cwd()
+
+
 def _resolve_destination(save_to, filename: str):
     """Where to write, honouring an explicit request and never overwriting."""
     from pathlib import Path
@@ -387,8 +499,7 @@ def _resolve_destination(save_to, filename: str):
         else:
             directory, name = requested.parent, requested.name
     else:
-        downloads = Path.home() / "Downloads"
-        directory, name = (downloads if downloads.is_dir() else Path.cwd()), filename
+        directory, name = _default_directory(), filename
 
     directory.mkdir(parents=True, exist_ok=True)
     return _free_path(directory / name)
@@ -471,8 +582,25 @@ async def _handle_get_result(args: dict, **kwargs) -> str:
         return _error("BFL video generation is not available in this build.")
     from urllib.parse import quote
 
-    raw = await _call_gateway("GET", f"{endpoints['base_url']}/generations/{quote(job_id.strip(), safe='')}")
-    return await _save_if_ready(raw, (args or {}).get("save_to"))
+    url = f"{endpoints['base_url']}/generations/{quote(job_id.strip(), safe='')}"
+    save_to = (args or {}).get("save_to")
+
+    raw = await _call_gateway("GET", url)
+    if _poll_is_finished(raw):
+        return await _save_if_ready(raw, save_to)
+
+    # Still running, so absorb the wait here instead of asking the model to
+    # take it. A model has no clock: told to wait it emits "I'll wait a minute"
+    # and its next action lands immediately, so the guidance produced a burst of
+    # polls rather than a paced one. Waiting inside the call cannot be skipped,
+    # needs no shell, and works the same on every platform. One call therefore
+    # covers a couple of minutes and returns as soon as a look finds it done.
+    if not await _wait_before_second_look():
+        # Interrupted mid-wait: hand back the status we already have rather
+        # than spending a round trip the user has just asked us to stop for.
+        return await _save_if_ready(raw, save_to)
+    raw = await _call_gateway("GET", url)
+    return await _save_if_ready(raw, save_to)
 
 
 async def _handle_prompting_guide(args: dict, **kwargs) -> str:
@@ -682,8 +810,9 @@ GET_RESULT_SCHEMA = {
     "name": "bfl_flux3_get_result",
     "description": (
         "Poll a FLUX 3 video job by the job id a generate tool returned. Generation takes minutes "
-        "and a long Generating phase is normal. Every response states the job's status, how long "
-        "to wait before polling again, and what you may do next — follow it rather than guessing. "
+        "and a long Generating phase is normal. This call waits for you while the job runs, so it "
+        "may take a couple of minutes; if it returns still generating, just call it again. Do not "
+        "sleep between calls. "
         "On Ready the clip is downloaded for you and the response gives its local path; your only "
         "remaining step is to deliver that file as the response describes."
     ),
@@ -813,11 +942,15 @@ auto-downscaled and output tops out at 720p.
 Submit returns a job id immediately — the video does not exist yet. Poll
 bfl_flux3_get_result with that id; generation takes several minutes and a long
 Generating phase is normal, not a stall. Nothing reaches disk before the job is
-Ready, so checking folders mid-run tells you nothing. Every response
-states the job status, how long to wait before polling again, and what you may
-do next — follow it literally rather than guessing an interval. A job survives
-client restarts: re-poll the same id rather than resubmitting, which would only
-spend your budgets on duplicate work.
+Ready, so checking folders mid-run tells you nothing.
+
+The waiting is not yours to do. bfl_flux3_get_result takes the pause itself
+while a job is still running, so one call can occupy a couple of minutes and
+comes back the moment the job finishes. If it returns still generating, just
+call it again — no sleeping, no interval to judge, nothing to time.
+
+A job survives client restarts: re-poll the same id rather than resubmitting,
+which would only spend your budgets on duplicate work.
 
 ## Save and deliver
 
