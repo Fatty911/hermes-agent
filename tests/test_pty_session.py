@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 
 import pytest
@@ -66,6 +67,52 @@ class FakeWS:
 
     async def close(self, code=1000, reason=""):
         self.close_code = code
+
+
+class BlockingCloseWS(FakeWS):
+    def __init__(self, entered, release):
+        super().__init__()
+        self._entered = entered
+        self._release = release
+
+    async def close(self, code=1000, reason=""):
+        self._entered.set()
+        await asyncio.to_thread(self._release.wait, 1.0)
+        await super().close(code=code, reason=reason)
+
+
+class BlockingReplayWS(FakeWS):
+    def __init__(self, entered, release):
+        super().__init__()
+        self._entered = entered
+        self._release = release
+
+    async def send_bytes(self, data):
+        await super().send_bytes(data)
+        if len(self.sent) == 1:
+            self._entered.set()
+            await self._release.wait()
+
+
+class GatedBridge(FakeBridge):
+    def __init__(self, chunk):
+        super().__init__([])
+        self._chunk = chunk
+        self._released = threading.Event()
+
+    def read(self, timeout):
+        self._released.wait(1.0)
+        if self._chunk is None:
+            return b""
+        chunk, self._chunk = self._chunk, None
+        return chunk
+
+    def release(self):
+        self._released.set()
+
+    def close(self):
+        self.release()
+        super().close()
 
 
 @pytest.mark.asyncio
@@ -155,6 +202,113 @@ async def test_same_key_replaces_session_when_identity_changes():
 
 
 @pytest.mark.asyncio
+async def test_concurrent_same_identity_spawns_once():
+    reg = make_registry()
+    spawn_started = threading.Event()
+    release_spawn = threading.Event()
+    spawned = []
+
+    def spawn():
+        bridge = FakeBridge([b"", b""])
+        spawned.append(bridge)
+        spawn_started.set()
+        release_spawn.wait(1.0)
+        return bridge
+
+    first = asyncio.create_task(
+        reg.attach_or_spawn("tok", identity="fresh", spawn=spawn)
+    )
+    assert await asyncio.to_thread(spawn_started.wait, 1.0)
+    second = asyncio.create_task(
+        reg.attach_or_spawn("tok", identity="fresh", spawn=spawn)
+    )
+    await asyncio.sleep(0.01)
+    release_spawn.set()
+
+    (s1, created1), (s2, created2) = await asyncio.gather(first, second)
+    assert len(spawned) == 1
+    assert s1 is s2
+    assert sorted((created1, created2)) == [False, True]
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_spawn_closes_unregistered_bridge():
+    reg = make_registry()
+    spawn_started = threading.Event()
+    release_spawn = threading.Event()
+    spawned = []
+
+    def spawn():
+        spawn_started.set()
+        release_spawn.wait(1.0)
+        bridge = FakeBridge([b""])
+        spawned.append(bridge)
+        return bridge
+
+    pending = asyncio.create_task(
+        reg.attach_or_spawn("tok", identity="fresh", spawn=spawn)
+    )
+    assert await asyncio.to_thread(spawn_started.wait, 1.0)
+    pending.cancel()
+    pending.cancel()  # repeated disconnect/shutdown cancellation is also safe
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(pending, 0.2)
+    assert spawned == []
+    assert reg._sessions == {}
+
+    release_spawn.set()
+    deadline = asyncio.get_running_loop().time() + 1.0
+    while (not spawned or not spawned[0].closed) and (
+        asyncio.get_running_loop().time() < deadline
+    ):
+        await asyncio.sleep(0.01)
+    assert len(spawned) == 1
+    assert spawned[0].closed is True
+    assert reg._sessions == {}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_identity_change_spawns_one_replacement():
+    reg = make_registry()
+    original = FakeBridge([b"", b""])
+    await reg.attach_or_spawn("tok", identity="fresh", spawn=lambda: original)
+
+    spawn_started = threading.Event()
+    release_spawn = threading.Event()
+    replacements = []
+
+    def spawn_replacement():
+        bridge = FakeBridge([b"", b""])
+        replacements.append(bridge)
+        spawn_started.set()
+        release_spawn.wait(1.0)
+        return bridge
+
+    first = asyncio.create_task(
+        reg.attach_or_spawn(
+            "tok", identity="resume:session-a", spawn=spawn_replacement
+        )
+    )
+    assert await asyncio.to_thread(spawn_started.wait, 1.0)
+    second = asyncio.create_task(
+        reg.attach_or_spawn(
+            "tok", identity="resume:session-a", spawn=spawn_replacement
+        )
+    )
+    await asyncio.sleep(0.01)
+    release_spawn.set()
+
+    (s1, created1), (s2, created2) = await asyncio.gather(first, second)
+    assert original.closed is True
+    assert len(replacements) == 1
+    assert s1 is s2
+    assert sorted((created1, created2)) == [False, True]
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
 async def test_replace_forces_new_session_with_same_identity():
     reg = make_registry()
     b1 = FakeBridge([b"", b"", b""])
@@ -167,6 +321,135 @@ async def test_replace_forces_new_session_with_same_identity():
     assert created is True
     assert b1.closed is True
     await reg.close_all()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_attaches_supersede_intermediate_socket():
+    from hermes_cli.pty_session import PtySession
+
+    bridge = FakeBridge([b"", b""])
+    session = PtySession("tok", bridge, buffer_cap=1024, read_timeout=0.01)
+    await session.start()
+
+    close_entered = threading.Event()
+    release_close = threading.Event()
+    original = BlockingCloseWS(close_entered, release_close)
+    await session.attach(original)
+
+    first_replacement = FakeWS()
+    second_replacement = FakeWS()
+    first = asyncio.create_task(session.attach(first_replacement))
+    assert await asyncio.to_thread(close_entered.wait, 1.0)
+    second = asyncio.create_task(session.attach(second_replacement))
+    await asyncio.sleep(0.01)
+    release_close.set()
+    await asyncio.gather(first, second)
+
+    assert original.close_code == 4409
+    assert first_replacement.close_code == 4409
+    assert second_replacement.close_code is None
+    assert session._ws is second_replacement
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_replay_precedes_live_output_without_duplication():
+    from hermes_cli.pty_session import PtySession
+
+    bridge = GatedBridge(b"live")
+    session = PtySession("tok", bridge, buffer_cap=1024, read_timeout=0.01)
+    session.buffer.append(b"history")
+    await session.start()
+
+    replay_entered = asyncio.Event()
+    release_replay = asyncio.Event()
+    ws = BlockingReplayWS(replay_entered, release_replay)
+    attaching = asyncio.create_task(session.attach(ws))
+    await asyncio.wait_for(replay_entered.wait(), 1.0)
+
+    bridge.release()
+    await asyncio.sleep(0.05)
+    assert [payload for kind, payload in ws.sent if kind == "bytes"] == [b"history"]
+
+    release_replay.set()
+    await attaching
+    deadline = asyncio.get_running_loop().time() + 1.0
+    while len(ws.sent) < 2 and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.01)
+    assert [payload for kind, payload in ws.sent if kind == "bytes"] == [
+        b"history",
+        b"live",
+    ]
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_snapshot_attach_rolls_back_to_detached():
+    from hermes_cli.pty_session import PtySession
+
+    session = PtySession(
+        "tok", FakeBridge([b""]), buffer_cap=1024, read_timeout=0.01
+    )
+    session.buffer.append(b"history")
+    await session.start()
+
+    replay_entered = asyncio.Event()
+    never_release = asyncio.Event()
+    ws = BlockingReplayWS(replay_entered, never_release)
+    attaching = asyncio.create_task(session.attach(ws))
+    await asyncio.wait_for(replay_entered.wait(), 1.0)
+    attaching.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await attaching
+    assert session._ws is None
+    assert session.attached is False
+    assert session.last_detached_at is not None
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_old_socket_close_does_not_publish_replacement():
+    from hermes_cli.pty_session import PtySession
+
+    session = PtySession(
+        "tok", FakeBridge([b""]), buffer_cap=1024, read_timeout=0.01
+    )
+    await session.start()
+    close_entered = threading.Event()
+    release_close = threading.Event()
+    old = BlockingCloseWS(close_entered, release_close)
+    await session.attach(old)
+
+    replacement = FakeWS()
+    attaching = asyncio.create_task(session.attach(replacement))
+    assert await asyncio.to_thread(close_entered.wait, 1.0)
+    attaching.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await attaching
+
+    assert session._ws is old
+    assert session.attached is True
+    assert replacement.close_code is None
+    release_close.set()
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_attach_after_supersede_is_rejected():
+    from hermes_cli.pty_session import PtySession
+
+    session = PtySession(
+        "tok", FakeBridge([b"", b""]), buffer_cap=1024, read_timeout=0.01
+    )
+    await session.start()
+    await session.supersede()
+
+    late = FakeWS()
+    await session.attach(late)
+
+    assert late.close_code == 4409
+    assert session.attached is False
 
 
 @pytest.mark.asyncio
